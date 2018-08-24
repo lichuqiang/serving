@@ -17,7 +17,7 @@ limitations under the License.
 package names
 
 import (
-	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
+	"github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	"github.com/knative/serving/pkg/reconciler"
 	"github.com/knative/serving/pkg/system"
 )
@@ -30,18 +30,14 @@ var K8sGatewayServiceFullname = reconciler.GetK8sServiceFullname(
 	"knative-ingressgateway",
 	"istio-system")
 
-func K8sService(route *v1alpha1.Route) string {
-	return route.Name
+func K8sService(i *v1alpha1.ClusterIngress) string {
+	return i.Name
 }
 
-func VirtualService(route *v1alpha1.Route) string {
-	return route.Name
+func VirtualService(i *v1alpha1.ClusterIngress) string {
+	return i.Name
 }
 
-func K8sServiceFullname(route *v1alpha1.Route) string {
-	return reconciler.GetK8sServiceFullname(K8sService(route), route.Namespace)
-}
-
-func ClusterIngress(route *v1alpha1.Route) string {
-	return route.Name
+func K8sServiceFullname(i *v1alpha1.ClusterIngress) string {
+	return reconciler.GetK8sServiceFullname(K8sService(i), i.Namespace)
 }

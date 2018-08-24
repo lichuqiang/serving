@@ -25,6 +25,7 @@ import (
 	istiolisters "github.com/knative/pkg/client/listers/istio/v1alpha3"
 	"github.com/knative/pkg/controller"
 	"github.com/knative/pkg/logging"
+	resourcenames "github.com/knative/serving/pkg/reconciler/v1alpha1/route/resources/names"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -33,9 +34,12 @@ import (
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 
+	netv1alpha1 "github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	"github.com/knative/serving/pkg/apis/serving"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
+	networkinginformers "github.com/knative/serving/pkg/client/informers/externalversions/networking/v1alpha1"
 	servinginformers "github.com/knative/serving/pkg/client/informers/externalversions/serving/v1alpha1"
+	networkinglisters "github.com/knative/serving/pkg/client/listers/networking/v1alpha1"
 	listers "github.com/knative/serving/pkg/client/listers/serving/v1alpha1"
 	"github.com/knative/serving/pkg/reconciler"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/route/config"
@@ -57,6 +61,7 @@ type Reconciler struct {
 	revisionLister       listers.RevisionLister
 	serviceLister        corev1listers.ServiceLister
 	virtualServiceLister istiolisters.VirtualServiceLister
+	clusterIngressLister networkinglisters.ClusterIngressLister
 
 	// Domain configuration could change over time and access to domainConfig
 	// must go through domainConfigMutex
@@ -79,6 +84,7 @@ func NewController(
 	revisionInformer servinginformers.RevisionInformer,
 	serviceInformer corev1informers.ServiceInformer,
 	virtualServiceInformer istioinformers.VirtualServiceInformer,
+	clusterIngressInformer networkinginformers.ClusterIngressInformer,
 ) *controller.Impl {
 
 	// No need to lock domainConfigMutex yet since the informers that can modify
@@ -90,6 +96,7 @@ func NewController(
 		revisionLister:       revisionInformer.Lister(),
 		serviceLister:        serviceInformer.Lister(),
 		virtualServiceLister: virtualServiceInformer.Lister(),
+		clusterIngressLister: clusterIngressInformer.Lister(),
 	}
 	impl := controller.NewImpl(c, c.Logger, "Routes")
 
@@ -105,20 +112,9 @@ func NewController(
 		UpdateFunc: controller.PassNew(c.EnqueueReferringRoute(impl)),
 	})
 
-	serviceInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
-		FilterFunc: controller.Filter(v1alpha1.SchemeGroupVersion.WithKind("Route")),
-		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc:    impl.EnqueueControllerOf,
-			UpdateFunc: controller.PassNew(impl.EnqueueControllerOf),
-		},
-	})
-
-	virtualServiceInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
-		FilterFunc: controller.Filter(v1alpha1.SchemeGroupVersion.WithKind("Route")),
-		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc:    impl.EnqueueControllerOf,
-			UpdateFunc: controller.PassNew(impl.EnqueueControllerOf),
-		},
+	clusterIngressInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    c.EnqueueOwnerRoute(impl),
+		UpdateFunc: controller.PassNew(c.EnqueueOwnerRoute(impl)),
 	})
 
 	c.Logger.Info("Setting up ConfigMap receivers")
@@ -176,10 +172,6 @@ func (c *Reconciler) reconcile(ctx context.Context, route *v1alpha1.Route) error
 	route.Status.InitializeConditions()
 
 	logger.Infof("Reconciling route :%v", route)
-	logger.Info("Creating/Updating placeholder k8s services")
-	if err := c.reconcilePlaceholderService(ctx, route); err != nil {
-		return err
-	}
 
 	// Call configureTrafficAndUpdateRouteStatus, which also updates the Route.Status
 	// to contain the domain we will use for Gateway creation.
@@ -222,14 +214,35 @@ func (c *Reconciler) configureTraffic(ctx context.Context, r *v1alpha1.Route) (*
 		// Traffic targets aren't ready, no need to configure Route.
 		return r, nil
 	}
-	logger.Info("All referred targets are routable.  Creating Istio VirtualService.")
-	if err := c.reconcileVirtualService(ctx, r, resources.MakeVirtualService(r, t)); err != nil {
+	logger.Info("All referred targets are routable.  Creating ClusterIngress.")
+	r.Status.Traffic = t.GetTrafficTargets()
+	r.Status.DomainInternal = resourcenames.K8sServiceFullname(r)
+	r.Status.MarkTrafficAssigned()
+
+	clusterIngress, err := c.reconcileClusterIngress(ctx, r, resources.MakeClusterIngress(r, t))
+	if err != nil {
 		return r, err
 	}
-	logger.Info("VirtualService created, marking AllTrafficAssigned with traffic information.")
-	r.Status.Traffic = t.GetTrafficTargets()
-	r.Status.MarkTrafficAssigned()
+	r.Status.PropagateClusterIngressStatus(clusterIngress.Status)
 	return r, nil
+}
+
+func (c *Reconciler) EnqueueOwnerRoute(impl *controller.Impl) func(obj interface{}) {
+	return func(obj interface{}) {
+		ing, ok := obj.(*netv1alpha1.ClusterIngress)
+		if !ok {
+			c.Logger.Infof("Ignoring non-Configuration objects %v", obj)
+			return
+		}
+		// Check whether is configuration is referred by a route.
+		routeNamespace := ing.Labels["route-ns"]
+		routeName, ok := ing.Labels["route"]
+		if !ok {
+			c.Logger.Infof("ClusterIngress %s does not have a referring route", ing.Name)
+			return
+		}
+		impl.EnqueueKey(fmt.Sprintf("%s/%s", routeNamespace, routeName))
+	}
 }
 
 func (c *Reconciler) EnqueueReferringRoute(impl *controller.Impl) func(obj interface{}) {

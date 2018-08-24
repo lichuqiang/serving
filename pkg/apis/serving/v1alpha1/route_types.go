@@ -19,12 +19,14 @@ package v1alpha1
 import (
 	"encoding/json"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/knative/pkg/apis"
 	"github.com/knative/pkg/kmeta"
 	sapis "github.com/knative/serving/pkg/apis"
+	netv1alpha1 "github.com/knative/serving/pkg/apis/networking/v1alpha1"
 )
 
 // +genclient
@@ -109,9 +111,13 @@ const (
 	// service is not configured properly or has no available
 	// backends ready to receive traffic.
 	RouteConditionAllTrafficAssigned sapis.ConditionType = "AllTrafficAssigned"
+
+	// RouteConditionIngressReady is set to False when the
+	// ClusterIngress fails to become Ready.
+	RouteConditionIngressReady sapis.ConditionType = "IngressReady"
 )
 
-var routeCondSet = sapis.NewLivingConditionSet(RouteConditionAllTrafficAssigned)
+var routeCondSet = sapis.NewLivingConditionSet(RouteConditionAllTrafficAssigned, RouteConditionIngressReady)
 
 // RouteStatus communicates the observed state of the Route (from the controller).
 type RouteStatus struct {
@@ -227,6 +233,21 @@ func (rs *RouteStatus) MarkMissingTrafficTarget(kind, name string) {
 	routeCondSet.Manage(rs).MarkFalse(RouteConditionAllTrafficAssigned,
 		kind+"Missing",
 		"%s %q referenced in traffic not found.", kind, name)
+}
+
+func (rs *RouteStatus) PropagateClusterIngressStatus(cs netv1alpha1.ClusterIngressStatus) {
+	cc := cs.GetCondition(netv1alpha1.ClusterIngressConditionReady)
+	if cc == nil {
+		return
+	}
+	switch {
+	case cc.Status == corev1.ConditionUnknown:
+		routeCondSet.Manage(rs).MarkUnknown(RouteConditionIngressReady, cc.Reason, cc.Message)
+	case cc.Status == corev1.ConditionTrue:
+		routeCondSet.Manage(rs).MarkTrue(RouteConditionIngressReady)
+	case cc.Status == corev1.ConditionFalse:
+		routeCondSet.Manage(rs).MarkFalse(RouteConditionIngressReady, cc.Reason, cc.Message)
+	}
 }
 
 // GetConditions returns the Conditions array. This enables generic handling of

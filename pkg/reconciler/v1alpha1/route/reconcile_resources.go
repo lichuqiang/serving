@@ -20,90 +20,63 @@ import (
 	"context"
 	"reflect"
 
-	"github.com/knative/pkg/apis/istio/v1alpha3"
 	"github.com/knative/pkg/logging"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
 
+	netv1alpha1 "github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
-	"github.com/knative/serving/pkg/reconciler/v1alpha1/route/resources"
-	resourcenames "github.com/knative/serving/pkg/reconciler/v1alpha1/route/resources/names"
 )
 
-func (c *Reconciler) reconcileVirtualService(ctx context.Context, route *v1alpha1.Route,
-	desiredVirtualService *v1alpha3.VirtualService) error {
-	logger := logging.FromContext(ctx)
-	ns := desiredVirtualService.Namespace
-	name := desiredVirtualService.Name
-
-	virtualService, err := c.virtualServiceLister.VirtualServices(ns).Get(name)
-	if apierrs.IsNotFound(err) {
-		virtualService, err = c.SharedClientSet.NetworkingV1alpha3().VirtualServices(ns).Create(desiredVirtualService)
-		if err != nil {
-			logger.Error("Failed to create VirtualService", zap.Error(err))
-			c.Recorder.Eventf(route, corev1.EventTypeWarning, "CreationFailed",
-				"Failed to create VirtualService %q: %v", name, err)
-			return err
-		}
-		c.Recorder.Eventf(route, corev1.EventTypeNormal, "Created",
-			"Created VirtualService %q", desiredVirtualService.Name)
-	} else if err != nil {
-		return err
-	} else if !equality.Semantic.DeepEqual(virtualService.Spec, desiredVirtualService.Spec) {
-		virtualService.Spec = desiredVirtualService.Spec
-		virtualService, err = c.SharedClientSet.NetworkingV1alpha3().VirtualServices(ns).Update(virtualService)
-		if err != nil {
-			logger.Error("Failed to update VirtualService", zap.Error(err))
-			return err
-		}
+func (c *Reconciler) getClusterIngressForRoute(route *v1alpha1.Route) (*netv1alpha1.ClusterIngress, error) {
+	selector := labels.Set(map[string]string{
+		"route":    route.Name,
+		"route-ns": route.Namespace}).AsSelector()
+	ingresses, err := c.clusterIngressLister.List(selector)
+	if err != nil {
+		return nil, err
 	}
-
-	// TODO(mattmoor): This is where we'd look at the state of the VirtualService and
-	// reflect any necessary state into the Route.
-	return err
+	if len(ingresses) == 0 {
+		return nil, apierrs.NewNotFound(v1alpha1.Resource("clusteringress"), route.Name)
+	}
+	// TODO(nghia): decides what to do when we see multiple here?
+	// probably sort by name and use the first one for consistency.
+	return ingresses[0], nil
 }
 
-func (c *Reconciler) reconcilePlaceholderService(ctx context.Context, route *v1alpha1.Route) error {
+func (c *Reconciler) reconcileClusterIngress(
+	ctx context.Context, r *v1alpha1.Route, desired *netv1alpha1.ClusterIngress) (*netv1alpha1.ClusterIngress, error) {
 	logger := logging.FromContext(ctx)
-	ns := route.Namespace
-	name := resourcenames.K8sService(route)
-
-	service, err := c.serviceLister.Services(ns).Get(name)
+	clusterIngress, err := c.getClusterIngressForRoute(r)
 	if apierrs.IsNotFound(err) {
-		// Doesn't exist, create it.
-		desiredService := resources.MakeK8sService(route)
-		service, err = c.KubeClientSet.CoreV1().Services(route.Namespace).Create(desiredService)
+		clusterIngress, err = c.ServingClientSet.NetworkingV1alpha1().ClusterIngresses().Create(desired)
 		if err != nil {
-			logger.Error("Failed to create service", zap.Error(err))
-			c.Recorder.Eventf(route, corev1.EventTypeWarning, "CreationFailed",
-				"Failed to create service %q: %v", name, err)
-			return err
+			logger.Error("Failed to create ClusterIngress", zap.Error(err))
+			c.Recorder.Eventf(r, corev1.EventTypeWarning, "CreationFailed",
+				"Failed to create ClusterIngress for route %s.%s: %v", r.Name, r.Namespace, err)
+			return nil, err
 		}
-		logger.Infof("Created service %s", name)
-		c.Recorder.Eventf(route, corev1.EventTypeNormal, "Created", "Created service %q", name)
-	} else if err != nil {
-		return err
-	} else {
-		// Make sure that the service has the proper specification
-		desiredService := resources.MakeK8sService(route)
-		// Preserve the ClusterIP field in the Service's Spec, if it has been set.
-		desiredService.Spec.ClusterIP = service.Spec.ClusterIP
-		if !equality.Semantic.DeepEqual(service.Spec, desiredService.Spec) {
-			service.Spec = desiredService.Spec
-			service, err = c.KubeClientSet.CoreV1().Services(ns).Update(service)
-			if err != nil {
-				return err
-			}
+		c.Recorder.Eventf(r, corev1.EventTypeNormal, "Created",
+			"Created ClusterIngress %q", desired.Name)
+		return clusterIngress, nil
+	} else if err == nil && !equality.Semantic.DeepEqual(clusterIngress.Spec, desired.Spec) {
+		// Even though the ClusterIngress is cluster-scoped, the
+		// generated API client still require a valid namespace.  Here
+		// we just use the Route's.
+		clusterIngress.Spec = desired.Spec
+		clusterIngress, err = c.ServingClientSet.NetworkingV1alpha1().ClusterIngresses().Update(clusterIngress)
+		if err != nil {
+			logger.Error("Failed to update ClusterIngress", zap.Error(err))
+			return nil, err
 		}
+		return clusterIngress, nil
 	}
-	// Update the route's domain internal field
-	route.Status.DomainInternal = resourcenames.K8sServiceFullname(route)
-
-	// TODO(mattmoor): This is where we'd look at the state of the Service and
+	// TODO(mattmoor): This is where we'd look at the state of the VirtualService and
 	// reflect any necessary state into the Route.
-	return nil
+	return clusterIngress, err
 }
 
 // Update the Status of the route.  Caller is responsible for checking
