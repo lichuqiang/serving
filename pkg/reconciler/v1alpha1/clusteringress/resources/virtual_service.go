@@ -33,6 +33,9 @@ import (
 	"github.com/knative/serving/pkg/system"
 )
 
+// MakeVirtualService creates an Istio VirtualService as network programming.
+// Such VirtualService specifies which Gateways and Hosts that it applies to,
+// as well as the routing rules.
 func MakeVirtualService(ci *v1alpha1.ClusterIngress) *v1alpha3.VirtualService {
 	return &v1alpha3.VirtualService{
 		ObjectMeta: metav1.ObjectMeta{

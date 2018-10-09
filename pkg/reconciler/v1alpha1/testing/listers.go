@@ -118,6 +118,7 @@ func (l *Listers) GetKPALister() kpalisters.PodAutoscalerLister {
 	return kpalisters.NewPodAutoscalerLister(l.indexerFor(&kpa.PodAutoscaler{}))
 }
 
+// GetClusterIngressLister get lister for ClusterIngress resource.
 func (l *Listers) GetClusterIngressLister() networkinglisters.ClusterIngressLister {
 	return networkinglisters.NewClusterIngressLister(l.indexerFor(&networking.ClusterIngress{}))
 }

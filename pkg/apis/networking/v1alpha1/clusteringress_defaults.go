@@ -22,8 +22,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-var (
-	DefaultTimeout    = 60 * time.Second
+const (
+	// Default to 60 seconds if timeout not specified.
+	DefaultTimeout = 60 * time.Second
+	// Default to retry for 3 times if not specified.
 	DefaultRetryCount = 3
 )
 

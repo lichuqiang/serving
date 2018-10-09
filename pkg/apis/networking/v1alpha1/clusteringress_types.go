@@ -327,6 +327,8 @@ func (cis *IngressStatus) MarkNetworkConfigured() {
 	clusterIngressCondSet.Manage(cis).MarkTrue(ClusterIngressConditionNetworkConfigured)
 }
 
+// MarkNetworkConfigurationMissing set ClusterIngressConditionNetworkConfigured to false
+// with given message.
 func (cis *IngressStatus) MarkNetworkConfigurationMissing(message string) {
 	clusterIngressCondSet.Manage(cis).MarkFalse(ClusterIngressConditionNetworkConfigured, "NetworkConfigurationMissing", message)
 }
