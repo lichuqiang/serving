@@ -69,6 +69,7 @@ func TestMakeVirtualServiceSpec_CorrectRoutes(t *testing.T) {
 					HTTP: &v1alpha1.HTTPClusterIngressRuleValue{
 						Paths: []v1alpha1.HTTPClusterIngressPath{
 							{
+								Path: "^/pets/(.*?)?",
 								Splits: []v1alpha1.ClusterIngressBackendSplit{
 									{
 										Backend: &v1alpha1.ClusterIngressBackend{
@@ -95,6 +96,7 @@ func TestMakeVirtualServiceSpec_CorrectRoutes(t *testing.T) {
 					HTTP: &v1alpha1.HTTPClusterIngressRuleValue{
 						Paths: []v1alpha1.HTTPClusterIngressPath{
 							{
+								Path: "^/pets/(.*?)?",
 								Splits: []v1alpha1.ClusterIngressBackendSplit{
 									{
 										Backend: &v1alpha1.ClusterIngressBackend{
@@ -119,14 +121,19 @@ func TestMakeVirtualServiceSpec_CorrectRoutes(t *testing.T) {
 	}
 	expected := []v1alpha3.HTTPRoute{{
 		Match: []v1alpha3.HTTPMatchRequest{{
+			Uri:       &istiov1alpha1.StringMatch{Regex: "^/pets/(.*?)?"},
 			Authority: &istiov1alpha1.StringMatch{Exact: "domain.com"},
 		}, {
+			Uri:       &istiov1alpha1.StringMatch{Regex: "^/pets/(.*?)?"},
 			Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test-ns.svc.cluster.local"},
 		}, {
+			Uri:       &istiov1alpha1.StringMatch{Regex: "^/pets/(.*?)?"},
 			Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test-ns.svc"},
 		}, {
+			Uri:       &istiov1alpha1.StringMatch{Regex: "^/pets/(.*?)?"},
 			Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test-ns"},
 		}, {
+			Uri:       &istiov1alpha1.StringMatch{Regex: "^/pets/(.*?)?"},
 			Authority: &istiov1alpha1.StringMatch{Exact: "test-route"},
 		}},
 		Route: []v1alpha3.DestinationWeight{{
@@ -143,6 +150,7 @@ func TestMakeVirtualServiceSpec_CorrectRoutes(t *testing.T) {
 		},
 	}, {
 		Match: []v1alpha3.HTTPMatchRequest{{
+			Uri:       &istiov1alpha1.StringMatch{Regex: "^/pets/(.*?)?"},
 			Authority: &istiov1alpha1.StringMatch{Exact: "v1.domain.com"},
 		}},
 		Route: []v1alpha3.DestinationWeight{{
@@ -227,7 +235,7 @@ func TestMakeVirtualServiceRoute_TwoTargets(t *testing.T) {
 				Backend: &v1alpha1.ClusterIngressBackend{
 					ServiceNamespace: "test-ns",
 					ServiceName:      "new-revision-service",
-					ServicePort:      intstr.FromInt(80),
+					ServicePort:      intstr.FromString("test-port"),
 				},
 				Percent: 10,
 			},
@@ -253,7 +261,7 @@ func TestMakeVirtualServiceRoute_TwoTargets(t *testing.T) {
 		}, {
 			Destination: v1alpha3.Destination{
 				Host: "new-revision-service.test-ns.svc.cluster.local",
-				Port: v1alpha3.PortSelector{Number: 80},
+				Port: v1alpha3.PortSelector{Name: "test-port"},
 			},
 			Weight: 10,
 		}},
