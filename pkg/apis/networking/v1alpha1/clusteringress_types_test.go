@@ -72,12 +72,24 @@ func TestTypicalFlow(t *testing.T) {
 	checkConditionSucceededClusterIngress(r.Status, ClusterIngressConditionLoadBalancerReady, t)
 	checkConditionSucceededClusterIngress(r.Status, ClusterIngressConditionReady, t)
 	checkIsReady(r.Status, t)
+
+	// Then network configuration is missing
+	r.Status.MarkNetworkConfigurationMissing("can not find configuration")
+	checkConditionFailedClusterIngress(r.Status, ClusterIngressConditionNetworkConfigured, t)
+	checkIsNotReady(r.Status, t)
 }
 
 func checkIsReady(cis IngressStatus, t *testing.T) {
 	t.Helper()
 	if !cis.IsReady() {
 		t.Fatal("IsReady()=false, wanted true")
+	}
+}
+
+func checkIsNotReady(cis IngressStatus, t *testing.T) {
+	t.Helper()
+	if cis.IsReady() {
+		t.Fatal("IsReady()=true, wanted false")
 	}
 }
 

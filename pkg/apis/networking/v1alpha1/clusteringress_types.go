@@ -327,6 +327,10 @@ func (cis *IngressStatus) MarkNetworkConfigured() {
 	clusterIngressCondSet.Manage(cis).MarkTrue(ClusterIngressConditionNetworkConfigured)
 }
 
+func (cis *IngressStatus) MarkNetworkConfigurationMissing(message string) {
+	clusterIngressCondSet.Manage(cis).MarkFalse(ClusterIngressConditionNetworkConfigured, "NetworkConfigurationMissing", message)
+}
+
 // MarkLoadBalancerReady marks the Ingress with ClusterIngressConditionLoadBalancerReady,
 // and also populate the address of the load balancer.
 func (cis *IngressStatus) MarkLoadBalancerReady(lbs []LoadBalancerIngressStatus) {
