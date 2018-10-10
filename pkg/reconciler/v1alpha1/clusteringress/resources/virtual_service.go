@@ -27,6 +27,7 @@ import (
 	istiov1alpha1 "github.com/knative/pkg/apis/istio/common/v1alpha1"
 	"github.com/knative/pkg/apis/istio/v1alpha3"
 	"github.com/knative/pkg/kmeta"
+	"github.com/knative/serving/pkg/apis/networking"
 	"github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	"github.com/knative/serving/pkg/reconciler"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/resources/names"
@@ -41,7 +42,7 @@ func MakeVirtualService(ci *v1alpha1.ClusterIngress) *v1alpha3.VirtualService {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            names.VirtualService(ci),
 			Namespace:       system.Namespace,
-			Labels:          map[string]string{"clusterIngress": ci.Name},
+			Labels:          map[string]string{networking.IngressLabelKey: ci.Name},
 			OwnerReferences: []metav1.OwnerReference{*kmeta.NewControllerRef(ci)},
 		},
 		Spec: *makeVirtualServiceSpec(ci),

@@ -33,4 +33,12 @@ const (
 	// value a different reconcilation logic may be used (for examples,
 	// Istio-based ClusterIngress will reconcile into a VirtualService).
 	IngressClassAnnotationKey = "networking.knative.dev/ingress.class"
+
+	// RouteLabelKey is the label key attached to ClusterIngress resources
+	// to indicate which Route triggered their creation.
+	RouteLabelKey = GroupName + "/route"
+
+	// IngressLabelKey is the label key attached to underlying network programming
+	// resources to indicate which ClusterIngress triggered their creation.
+	IngressLabelKey = GroupName + "/clusteringress"
 )

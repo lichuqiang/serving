@@ -24,6 +24,7 @@ import (
 	istiov1alpha1 "github.com/knative/pkg/apis/istio/common/v1alpha1"
 	"github.com/knative/pkg/apis/istio/v1alpha3"
 	"github.com/knative/pkg/kmeta"
+	"github.com/knative/serving/pkg/apis/networking"
 	"github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	"github.com/knative/serving/pkg/system"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,7 +41,7 @@ func TestMakeVirtualServiceSpec_CorrectMetadata(t *testing.T) {
 	expected := metav1.ObjectMeta{
 		Name:      "test-ingress",
 		Namespace: system.Namespace,
-		Labels:    map[string]string{"clusterIngress": "test-ingress"},
+		Labels:    map[string]string{networking.IngressLabelKey: "test-ingress"},
 		OwnerReferences: []metav1.OwnerReference{
 			*kmeta.NewControllerRef(ci),
 		},

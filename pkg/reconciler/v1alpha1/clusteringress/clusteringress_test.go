@@ -29,6 +29,7 @@ import (
 	"github.com/knative/pkg/apis/istio/v1alpha3"
 	"github.com/knative/pkg/controller"
 	"github.com/knative/pkg/kmeta"
+	"github.com/knative/serving/pkg/apis/networking"
 	"github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	"github.com/knative/serving/pkg/reconciler"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/resources"
@@ -124,7 +125,7 @@ func TestReconcile(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:            "reconcile-virtualservice",
 					Namespace:       system.Namespace,
-					Labels:          map[string]string{"clusterIngress": "reconcile-virtualservice"},
+					Labels:          map[string]string{networking.IngressLabelKey: "reconcile-virtualservice"},
 					OwnerReferences: []metav1.OwnerReference{*kmeta.NewControllerRef(ingress("reconcile-virtualservice", 1234))},
 				},
 				Spec: v1alpha3.VirtualServiceSpec{},
