@@ -26,24 +26,24 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
-	istiov1alpha1 "github.com/knative/pkg/apis/istio/common/v1alpha1"
 	"github.com/knative/pkg/apis/istio/v1alpha3"
 	fakesharedclientset "github.com/knative/pkg/client/clientset/versioned/fake"
 	sharedinformers "github.com/knative/pkg/client/informers/externalversions"
 	"github.com/knative/pkg/configmap"
 	ctrl "github.com/knative/pkg/controller"
 	"github.com/knative/serving/pkg/activator"
+	netv1alpha1 "github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	"github.com/knative/serving/pkg/apis/serving"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	fakeclientset "github.com/knative/serving/pkg/client/clientset/versioned/fake"
 	informers "github.com/knative/serving/pkg/client/informers/externalversions"
 	rclr "github.com/knative/serving/pkg/reconciler"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/route/config"
-	"github.com/knative/serving/pkg/reconciler/v1alpha1/route/resources"
 	resourcenames "github.com/knative/serving/pkg/reconciler/v1alpha1/route/resources/names"
 	"github.com/knative/serving/pkg/system"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	kubeinformers "k8s.io/client-go/informers"
 	fakekubeclientset "k8s.io/client-go/kubernetes/fake"
 
@@ -228,7 +228,7 @@ func newTestSetup(t *testing.T, configs ...*corev1.ConfigMap) (
 		servingInformer.Serving().V1alpha1().Configurations(),
 		servingInformer.Serving().V1alpha1().Revisions(),
 		kubeInformer.Core().V1().Services(),
-		sharedInformer.Networking().V1alpha3().VirtualServices(),
+		servingInformer.Networking().V1alpha1().ClusterIngresses(),
 	)
 
 	reconciler = controller.Reconciler.(*Reconciler)
@@ -271,13 +271,13 @@ func addResourcesToInformers(
 
 // Test the only revision in the route is in Reserve (inactive) serving status.
 func TestCreateRouteForOneReserveRevision(t *testing.T) {
-	kubeClient, sharedClient, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
+	kubeClient, _, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
 
 	h := NewHooks()
 	// Look for the events. Events are delivered asynchronously so we need to use
 	// hooks here. Each hook tests for a specific event.
 	h.OnCreate(&kubeClient.Fake, "events", ExpectNormalEventDelivery(t, `Created service "test-route"`))
-	h.OnCreate(&kubeClient.Fake, "events", ExpectNormalEventDelivery(t, `Created VirtualService "test-route"`))
+	h.OnCreate(&kubeClient.Fake, "events", ExpectNormalEventDelivery(t, "^Created ClusterIngress.*" /*ingress name is unset in test*/))
 	h.OnCreate(&kubeClient.Fake, "events", ExpectNormalEventDelivery(t, `Updated status for route "test-route"`))
 
 	// An inactive revision
@@ -304,14 +304,14 @@ func TestCreateRouteForOneReserveRevision(t *testing.T) {
 	controller.Reconcile(context.TODO(), KeyOrDie(route))
 
 	// Look for the route rule with activator as the destination.
-	vs, err := sharedClient.NetworkingV1alpha3().VirtualServices(testNamespace).Get(resourcenames.VirtualService(route), metav1.GetOptions{})
+	ci, err := controller.getClusterIngressForRoute(route)
 	if err != nil {
-		t.Fatalf("error getting VirtualService: %v", err)
+		t.Fatalf("error getting ClusterIngress: %v", err)
 	}
 
 	// Check labels
-	expectedLabels := map[string]string{"route": route.Name}
-	if diff := cmp.Diff(expectedLabels, vs.Labels); diff != "" {
+	expectedLabels := map[string]string{serving.RouteLabelKey: fmt.Sprintf("%s/%s", route.Namespace, route.Name)}
+	if diff := cmp.Diff(expectedLabels, ci.Labels); diff != "" {
 		t.Errorf("Unexpected label diff (-want +got): %v", diff)
 	}
 
@@ -322,49 +322,38 @@ func TestCreateRouteForOneReserveRevision(t *testing.T) {
 		Name:       route.Name,
 	}}
 
-	if diff := cmp.Diff(expectedRefs, vs.OwnerReferences, cmpopts.IgnoreFields(expectedRefs[0], "Controller", "BlockOwnerDeletion")); diff != "" {
+	if diff := cmp.Diff(expectedRefs, ci.OwnerReferences, cmpopts.IgnoreFields(expectedRefs[0], "Controller", "BlockOwnerDeletion")); diff != "" {
 		t.Errorf("Unexpected rule owner refs diff (-want +got): %v", diff)
 	}
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
-	expectedSpec := v1alpha3.VirtualServiceSpec{
-		// We want to connect to two Gateways: the Route's ingress
-		// Gateway, and the 'mesh' Gateway.  The former provides
-		// access from outside of the cluster, and the latter provides
-		// access for services from inside the cluster.
-		Gateways: []string{
-			resourcenames.K8sGatewayFullname,
-			"mesh",
-		},
-		Hosts: []string{
-			"*." + domain,
-			domain,
-			"test-route.test.svc.cluster.local",
-		},
-		Http: []v1alpha3.HTTPRoute{{
-			Match: []v1alpha3.HTTPMatchRequest{{
-				Authority: &istiov1alpha1.StringMatch{Exact: domain},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc.cluster.local"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route"},
-			}},
-			Route: []v1alpha3.DestinationWeight{getActivatorDestinationWeight(100)},
-			AppendHeaders: map[string]string{
-				activator.RevisionHeaderName:      "test-rev",
-				activator.RevisionHeaderNamespace: testNamespace,
+	expectedSpec := netv1alpha1.IngressSpec{
+		Rules: []netv1alpha1.ClusterIngressRule{{
+			Hosts: []string{
+				domain,
+				"test-route.test.svc.cluster.local",
+				"test-route.test.svc",
+				"test-route.test",
+				"test-route",
 			},
-			Timeout: resources.DefaultRouteTimeout,
-			Retries: &v1alpha3.HTTPRetry{
-				Attempts:      resources.DefaultRouteRetryAttempts,
-				PerTryTimeout: resources.DefaultRouteTimeout,
+			HTTP: &netv1alpha1.HTTPClusterIngressRuleValue{
+				Paths: []netv1alpha1.HTTPClusterIngressPath{{
+					Splits: []netv1alpha1.ClusterIngressBackendSplit{{
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: "knative-serving",
+							ServiceName:      "activator-service",
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 100,
+					}},
+					AppendHeaders: map[string]string{
+						"knative-serving-revision":  "test-rev",
+						"knative-serving-namespace": testNamespace,
+					},
+				}},
 			},
 		}},
 	}
-	if diff := cmp.Diff(expectedSpec, vs.Spec); diff != "" {
+	if diff := cmp.Diff(expectedSpec, ci.Spec); diff != "" {
 		t.Errorf("Unexpected rule spec diff (-want +got): %s", diff)
 	}
 
@@ -374,7 +363,7 @@ func TestCreateRouteForOneReserveRevision(t *testing.T) {
 }
 
 func TestCreateRouteWithMultipleTargets(t *testing.T) {
-	_, sharedClient, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
+	_, _, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
 	// A standalone revision
 	rev := getTestRevision("test-rev")
 	servingClient.ServingV1alpha1().Revisions(testNamespace).Create(rev)
@@ -408,66 +397,50 @@ func TestCreateRouteWithMultipleTargets(t *testing.T) {
 
 	controller.Reconcile(context.TODO(), KeyOrDie(route))
 
-	vs, err := sharedClient.NetworkingV1alpha3().VirtualServices(testNamespace).Get(resourcenames.VirtualService(route), metav1.GetOptions{})
+	ci, err := controller.getClusterIngressForRoute(route)
 	if err != nil {
-		t.Fatalf("error getting VirtualService: %v", err)
+		t.Fatalf("error getting ClusterIngress: %v", err)
 	}
 
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
-	expectedSpec := v1alpha3.VirtualServiceSpec{
-		// We want to connect to two Gateways: the Route's ingress
-		// Gateway, and the 'mesh' Gateway.  The former provides
-		// access from outside of the cluster, and the latter provides
-		// access for services from inside the cluster.
-		Gateways: []string{
-			resourcenames.K8sGatewayFullname,
-			"mesh",
-		},
-		Hosts: []string{
-			"*." + domain,
-			domain,
-			"test-route.test.svc.cluster.local",
-		},
-		Http: []v1alpha3.HTTPRoute{{
-			Match: []v1alpha3.HTTPMatchRequest{{
-				Authority: &istiov1alpha1.StringMatch{Exact: domain},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc.cluster.local"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route"},
-			}},
-			Route: []v1alpha3.DestinationWeight{{
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s-service.test.svc.cluster.local", cfgrev.Name),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 90,
-			}, {
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s-service.test.svc.cluster.local", rev.Name),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 10,
-			}},
-			Timeout: resources.DefaultRouteTimeout,
-			Retries: &v1alpha3.HTTPRetry{
-				Attempts:      resources.DefaultRouteRetryAttempts,
-				PerTryTimeout: resources.DefaultRouteTimeout,
+	expectedSpec := netv1alpha1.IngressSpec{
+		Rules: []netv1alpha1.ClusterIngressRule{{
+			Hosts: []string{
+				domain,
+				"test-route.test.svc.cluster.local",
+				"test-route.test.svc",
+				"test-route.test",
+				"test-route",
+			},
+			HTTP: &netv1alpha1.HTTPClusterIngressRuleValue{
+				Paths: []netv1alpha1.HTTPClusterIngressPath{{
+					Splits: []netv1alpha1.ClusterIngressBackendSplit{{
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      fmt.Sprintf("%s-service", cfgrev.Name),
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 90,
+					}, {
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: "test-ns",
+							ServiceName:      fmt.Sprintf("%s-service", rev.Name),
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 10,
+					}},
+				}},
 			},
 		}},
 	}
-	if diff := cmp.Diff(expectedSpec, vs.Spec); diff != "" {
+	if diff := cmp.Diff(expectedSpec, ci.Spec); diff != "" {
 		t.Errorf("Unexpected rule spec diff (-want +got): %v", diff)
 	}
 }
 
 // Test one out of multiple target revisions is in Reserve serving state.
 func TestCreateRouteWithOneTargetReserve(t *testing.T) {
-	_, sharedClient, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
+	_, _, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
 	// A standalone inactive revision
 	rev := getTestRevisionWithCondition("test-rev",
 		duckv1alpha1.Condition{
@@ -506,63 +479,53 @@ func TestCreateRouteWithOneTargetReserve(t *testing.T) {
 
 	controller.Reconcile(context.TODO(), KeyOrDie(route))
 
-	vs, err := sharedClient.NetworkingV1alpha3().VirtualServices(testNamespace).Get(resourcenames.VirtualService(route), metav1.GetOptions{})
+	ci, err := controller.getClusterIngressForRoute(route)
 	if err != nil {
-		t.Fatalf("error getting VirtualService: %v", err)
+		t.Fatalf("error getting ClusterIngress: %v", err)
 	}
 
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
-	expectedSpec := v1alpha3.VirtualServiceSpec{
-		// We want to connect to two Gateways: the Route's ingress
-		// Gateway, and the 'mesh' Gateway.  The former provides
-		// access from outside of the cluster, and the latter provides
-		// access for services from inside the cluster.
-		Gateways: []string{
-			resourcenames.K8sGatewayFullname,
-			"mesh",
-		},
-		Hosts: []string{
-			"*." + domain,
-			domain,
-			"test-route.test.svc.cluster.local",
-		},
-		Http: []v1alpha3.HTTPRoute{{
-			Match: []v1alpha3.HTTPMatchRequest{{
-				Authority: &istiov1alpha1.StringMatch{Exact: domain},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc.cluster.local"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route"},
-			}},
-			Route: []v1alpha3.DestinationWeight{{
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s-service.%s.svc.cluster.local", cfgrev.Name, testNamespace),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 90,
-			}, getActivatorDestinationWeight(10)},
-			AppendHeaders: map[string]string{
-				activator.RevisionHeaderName:      "test-rev",
-				activator.RevisionHeaderNamespace: testNamespace,
+	expectedSpec := netv1alpha1.IngressSpec{
+		Rules: []netv1alpha1.ClusterIngressRule{{
+			Hosts: []string{
+				domain,
+				"test-route.test.svc.cluster.local",
+				"test-route.test.svc",
+				"test-route.test",
+				"test-route",
 			},
-			Timeout: resources.DefaultRouteTimeout,
-			Retries: &v1alpha3.HTTPRetry{
-				Attempts:      resources.DefaultRouteRetryAttempts,
-				PerTryTimeout: resources.DefaultRouteTimeout,
+			HTTP: &netv1alpha1.HTTPClusterIngressRuleValue{
+				Paths: []netv1alpha1.HTTPClusterIngressPath{{
+					Splits: []netv1alpha1.ClusterIngressBackendSplit{{
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      fmt.Sprintf("%s-service", cfgrev.Name),
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 90,
+					}, {
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: "knative-serving",
+							ServiceName:      "activator-service",
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 10,
+					}},
+					AppendHeaders: map[string]string{
+						"knative-serving-revision":  "test-rev",
+						"knative-serving-namespace": testNamespace,
+					},
+				}},
 			},
 		}},
 	}
-	if diff := cmp.Diff(expectedSpec, vs.Spec); diff != "" {
+	if diff := cmp.Diff(expectedSpec, ci.Spec); diff != "" {
 		t.Errorf("Unexpected rule spec diff (-want +got): %v", diff)
 	}
 }
 
 func TestCreateRouteWithDuplicateTargets(t *testing.T) {
-	_, sharedClient, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
+	_, _, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
 
 	// A standalone revision
 	rev := getTestRevision("test-rev")
@@ -615,94 +578,78 @@ func TestCreateRouteWithDuplicateTargets(t *testing.T) {
 
 	controller.Reconcile(context.TODO(), KeyOrDie(route))
 
-	vs, err := sharedClient.NetworkingV1alpha3().VirtualServices(testNamespace).Get(resourcenames.VirtualService(route), metav1.GetOptions{})
+	ci, err := controller.getClusterIngressForRoute(route)
 	if err != nil {
-		t.Fatalf("error getting VirtualService: %v", err)
+		t.Fatalf("error getting ClusterIngress: %v", err)
 	}
 
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
-	expectedSpec := v1alpha3.VirtualServiceSpec{
-		// We want to connect to two Gateways: the Route's ingress
-		// Gateway, and the 'mesh' Gateway.  The former provides
-		// access from outside of the cluster, and the latter provides
-		// access for services from inside the cluster.
-		Gateways: []string{
-			resourcenames.K8sGatewayFullname,
-			"mesh",
-		},
-		Hosts: []string{
-			"*." + domain,
-			domain,
-			"test-route.test.svc.cluster.local",
-		},
-		Http: []v1alpha3.HTTPRoute{{
-			Match: []v1alpha3.HTTPMatchRequest{{
-				Authority: &istiov1alpha1.StringMatch{Exact: domain},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc.cluster.local"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route"},
-			}},
-			Route: []v1alpha3.DestinationWeight{{
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s.%s.svc.cluster.local", "p-deadbeef-service", testNamespace),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 50,
-			}, {
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s.%s.svc.cluster.local", "test-rev-service", testNamespace),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 50,
-			}},
-			Timeout: resources.DefaultRouteTimeout,
-			Retries: &v1alpha3.HTTPRetry{
-				Attempts:      resources.DefaultRouteRetryAttempts,
-				PerTryTimeout: resources.DefaultRouteTimeout,
+	expectedSpec := netv1alpha1.IngressSpec{
+		Rules: []netv1alpha1.ClusterIngressRule{{
+			Hosts: []string{
+				domain,
+				"test-route.test.svc.cluster.local",
+				"test-route.test.svc",
+				"test-route.test",
+				"test-route",
+			},
+			HTTP: &netv1alpha1.HTTPClusterIngressRuleValue{
+				Paths: []netv1alpha1.HTTPClusterIngressPath{{
+					Splits: []netv1alpha1.ClusterIngressBackendSplit{{
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      fmt.Sprintf("%s-service", cfgrev.Name),
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 50,
+					}, {
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      fmt.Sprintf("%s-service", rev.Name),
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 50,
+					}},
+				}},
 			},
 		}, {
-			Match: []v1alpha3.HTTPMatchRequest{{Authority: &istiov1alpha1.StringMatch{Exact: "test-revision-1." + domain}}},
-			Route: []v1alpha3.DestinationWeight{{
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s.%s.svc.cluster.local", "test-rev-service", testNamespace),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 100,
-			}},
-			Timeout: resources.DefaultRouteTimeout,
-			Retries: &v1alpha3.HTTPRetry{
-				Attempts:      resources.DefaultRouteRetryAttempts,
-				PerTryTimeout: resources.DefaultRouteTimeout,
+			Hosts: []string{"test-revision-1." + domain},
+			HTTP: &netv1alpha1.HTTPClusterIngressRuleValue{
+				Paths: []netv1alpha1.HTTPClusterIngressPath{{
+					Splits: []netv1alpha1.ClusterIngressBackendSplit{{
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      "test-rev-service",
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 100,
+					}},
+				}},
 			},
 		}, {
-			Match: []v1alpha3.HTTPMatchRequest{{Authority: &istiov1alpha1.StringMatch{Exact: "test-revision-2." + domain}}},
-			Route: []v1alpha3.DestinationWeight{{
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s.%s.svc.cluster.local", "test-rev-service", testNamespace),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 100,
-			}},
-			Timeout: resources.DefaultRouteTimeout,
-			Retries: &v1alpha3.HTTPRetry{
-				Attempts:      resources.DefaultRouteRetryAttempts,
-				PerTryTimeout: resources.DefaultRouteTimeout,
+			Hosts: []string{"test-revision-2." + domain},
+			HTTP: &netv1alpha1.HTTPClusterIngressRuleValue{
+				Paths: []netv1alpha1.HTTPClusterIngressPath{{
+					Splits: []netv1alpha1.ClusterIngressBackendSplit{{
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      "test-rev-service",
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 100,
+					}},
+				}},
 			},
 		}},
 	}
-	if diff := cmp.Diff(expectedSpec, vs.Spec); diff != "" {
-		fmt.Printf("%+v\n", vs.Spec)
+	if diff := cmp.Diff(expectedSpec, ci.Spec); diff != "" {
+		fmt.Printf("%+v\n", ci.Spec)
 		t.Errorf("Unexpected rule spec diff (-want +got): %v", diff)
 	}
 }
 
 func TestCreateRouteWithNamedTargets(t *testing.T) {
-	_, sharedClient, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
+	_, _, servingClient, controller, _, _, servingInformer, _ := newTestReconciler(t)
 	// A standalone revision
 	rev := getTestRevision("test-rev")
 	servingClient.ServingV1alpha1().Revisions(testNamespace).Create(rev)
@@ -740,87 +687,71 @@ func TestCreateRouteWithNamedTargets(t *testing.T) {
 
 	controller.Reconcile(context.TODO(), KeyOrDie(route))
 
-	vs, err := sharedClient.NetworkingV1alpha3().VirtualServices(testNamespace).Get(resourcenames.VirtualService(route), metav1.GetOptions{})
+	ci, err := controller.getClusterIngressForRoute(route)
 	if err != nil {
-		t.Fatalf("error getting virtualservice: %v", err)
+		t.Fatalf("error getting ClusterIngress: %v", err)
 	}
 	domain := strings.Join([]string{route.Name, route.Namespace, defaultDomainSuffix}, ".")
-	expectedSpec := v1alpha3.VirtualServiceSpec{
-		// We want to connect to two Gateways: the Route's ingress
-		// Gateway, and the 'mesh' Gateway.  The former provides
-		// access from outside of the cluster, and the latter provides
-		// access for services from inside the cluster.
-		Gateways: []string{
-			resourcenames.K8sGatewayFullname,
-			"mesh",
-		},
-		Hosts: []string{
-			"*." + domain,
-			domain,
-			"test-route.test.svc.cluster.local",
-		},
-		Http: []v1alpha3.HTTPRoute{{
-			Match: []v1alpha3.HTTPMatchRequest{{
-				Authority: &istiov1alpha1.StringMatch{Exact: domain},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc.cluster.local"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test.svc"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route.test"},
-			}, {
-				Authority: &istiov1alpha1.StringMatch{Exact: "test-route"},
-			}},
-			Route: []v1alpha3.DestinationWeight{{
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s.%s.svc.cluster.local", "test-rev-service", testNamespace),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 50,
-			}, {
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s.%s.svc.cluster.local", "p-deadbeef-service", testNamespace),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 50,
-			}},
-			Timeout: resources.DefaultRouteTimeout,
-			Retries: &v1alpha3.HTTPRetry{
-				Attempts:      resources.DefaultRouteRetryAttempts,
-				PerTryTimeout: resources.DefaultRouteTimeout,
+	expectedSpec := netv1alpha1.IngressSpec{
+		Rules: []netv1alpha1.ClusterIngressRule{{
+			Hosts: []string{
+				domain,
+				"test-route.test.svc.cluster.local",
+				"test-route.test.svc",
+				"test-route.test",
+				"test-route",
+			},
+			HTTP: &netv1alpha1.HTTPClusterIngressRuleValue{
+				Paths: []netv1alpha1.HTTPClusterIngressPath{{
+					Splits: []netv1alpha1.ClusterIngressBackendSplit{{
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      fmt.Sprintf("%s-service", cfgrev.Name),
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 50,
+					}, {
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      fmt.Sprintf("%s-service", rev.Name),
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 10,
+					}},
+				}},
 			},
 		}, {
-			Match: []v1alpha3.HTTPMatchRequest{{Authority: &istiov1alpha1.StringMatch{Exact: "bar." + domain}}},
-			Route: []v1alpha3.DestinationWeight{{
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s.%s.svc.cluster.local", "p-deadbeef-service", testNamespace),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 100,
-			}},
-			Timeout: resources.DefaultRouteTimeout,
-			Retries: &v1alpha3.HTTPRetry{
-				Attempts:      resources.DefaultRouteRetryAttempts,
-				PerTryTimeout: resources.DefaultRouteTimeout,
+			Hosts: []string{"foo." + domain},
+			HTTP: &netv1alpha1.HTTPClusterIngressRuleValue{
+				Paths: []netv1alpha1.HTTPClusterIngressPath{{
+					Splits: []netv1alpha1.ClusterIngressBackendSplit{{
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      fmt.Sprintf("%s-service", rev.Name),
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 100,
+					}},
+				}},
 			},
 		}, {
-			Match: []v1alpha3.HTTPMatchRequest{{Authority: &istiov1alpha1.StringMatch{Exact: "foo." + domain}}},
-			Route: []v1alpha3.DestinationWeight{{
-				Destination: v1alpha3.Destination{
-					Host: fmt.Sprintf("%s.%s.svc.cluster.local", "test-rev-service", testNamespace),
-					Port: v1alpha3.PortSelector{Number: 80},
-				},
-				Weight: 100,
-			}},
-			Timeout: resources.DefaultRouteTimeout,
-			Retries: &v1alpha3.HTTPRetry{
-				Attempts:      resources.DefaultRouteRetryAttempts,
-				PerTryTimeout: resources.DefaultRouteTimeout,
+			Hosts: []string{"bar." + domain},
+			HTTP: &netv1alpha1.HTTPClusterIngressRuleValue{
+				Paths: []netv1alpha1.HTTPClusterIngressPath{{
+					Splits: []netv1alpha1.ClusterIngressBackendSplit{{
+						Backend: &netv1alpha1.ClusterIngressBackend{
+							ServiceNamespace: testNamespace,
+							ServiceName:      fmt.Sprintf("%s-service", cfgrev.Name),
+							ServicePort:      intstr.FromInt(80),
+						},
+						Percent: 100,
+					}},
+				}},
 			},
 		}},
 	}
-	if diff := cmp.Diff(expectedSpec, vs.Spec); diff != "" {
-		fmt.Printf("%+v\n", vs.Spec)
+	if diff := cmp.Diff(expectedSpec, ci.Spec); diff != "" {
+		fmt.Printf("%+v\n", ci.Spec)
 		t.Errorf("Unexpected rule spec diff (-want +got): %v", diff)
 	}
 }

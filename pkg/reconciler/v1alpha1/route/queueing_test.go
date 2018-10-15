@@ -21,7 +21,6 @@ import (
 	"time"
 
 	fakesharedclientset "github.com/knative/pkg/client/clientset/versioned/fake"
-	sharedinformers "github.com/knative/pkg/client/informers/externalversions"
 	"github.com/knative/pkg/configmap"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	fakeclientset "github.com/knative/serving/pkg/client/clientset/versioned/fake"
@@ -80,7 +79,6 @@ func TestNewRouteCallsSyncHandler(t *testing.T) {
 	// Create informer factories with fake clients. The second parameter sets the
 	// resync period to zero, disabling it.
 	kubeInformer := kubeinformers.NewSharedInformerFactory(kubeClient, 0)
-	sharedInformer := sharedinformers.NewSharedInformerFactory(sharedClient, 0)
 	servingInformer := informers.NewSharedInformerFactory(servingClient, 0)
 
 	controller := NewController(
@@ -95,7 +93,7 @@ func TestNewRouteCallsSyncHandler(t *testing.T) {
 		servingInformer.Serving().V1alpha1().Configurations(),
 		servingInformer.Serving().V1alpha1().Revisions(),
 		kubeInformer.Core().V1().Services(),
-		sharedInformer.Networking().V1alpha3().VirtualServices(),
+		servingInformer.Networking().V1alpha1().ClusterIngresses(),
 	)
 
 	h := NewHooks()
