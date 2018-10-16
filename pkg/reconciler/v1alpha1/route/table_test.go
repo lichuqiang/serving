@@ -22,13 +22,14 @@ import (
 	"testing"
 
 	duckv1alpha1 "github.com/knative/pkg/apis/duck/v1alpha1"
-	istiov1alpha3 "github.com/knative/pkg/apis/istio/v1alpha3"
 	"github.com/knative/pkg/configmap"
 	"github.com/knative/pkg/controller"
+	netv1alpha1 "github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	"github.com/knative/serving/pkg/reconciler"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/route/config"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/route/resources"
+	resourcenames "github.com/knative/serving/pkg/reconciler/v1alpha1/route/resources/names"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/route/traffic"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,9 +60,6 @@ func TestReconcile(t *testing.T) {
 				simpleNotReadyConfig("default", "not-ready").Status.LatestCreatedRevisionName,
 			),
 		},
-		WantCreates: []metav1.Object{
-			resources.MakeK8sService(simpleRunLatest("default", "first-reconcile", "not-ready", nil)),
-		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: simpleRunLatest("default", "first-reconcile", "not-ready", &v1alpha1.RouteStatus{
 				Domain:         "first-reconcile.default.example.com",
@@ -72,6 +70,9 @@ func TestReconcile(t *testing.T) {
 					Status:  corev1.ConditionUnknown,
 					Reason:  "RevisionMissing",
 					Message: `Configuration "not-ready" is waiting for a Revision to become ready.`,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionUnknown,
 				}, {
 					Type:    v1alpha1.RouteConditionReady,
 					Status:  corev1.ConditionUnknown,
@@ -91,9 +92,6 @@ func TestReconcile(t *testing.T) {
 				simpleFailedConfig("default", "permanently-failed").Status.LatestCreatedRevisionName,
 			),
 		},
-		WantCreates: []metav1.Object{
-			resources.MakeK8sService(simpleRunLatest("default", "first-reconcile", "permanently-failed", nil)),
-		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: simpleRunLatest("default", "first-reconcile", "permanently-failed", &v1alpha1.RouteStatus{
 				Domain:         "first-reconcile.default.example.com",
@@ -104,6 +102,9 @@ func TestReconcile(t *testing.T) {
 					Status:  corev1.ConditionFalse,
 					Reason:  "RevisionMissing",
 					Message: `Configuration "permanently-failed" does not have any ready Revision.`,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionUnknown,
 				}, {
 					Type:    v1alpha1.RouteConditionReady,
 					Status:  corev1.ConditionFalse,
@@ -127,9 +128,6 @@ func TestReconcile(t *testing.T) {
 				simpleNotReadyConfig("default", "not-ready").Status.LatestCreatedRevisionName,
 			),
 		},
-		WantCreates: []metav1.Object{
-			resources.MakeK8sService(simpleRunLatest("default", "first-reconcile", "not-ready", nil)),
-		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: simpleRunLatest("default", "first-reconcile", "not-ready", &v1alpha1.RouteStatus{
 				Domain:         "first-reconcile.default.example.com",
@@ -141,6 +139,9 @@ func TestReconcile(t *testing.T) {
 					Reason:  "RevisionMissing",
 					Message: `Configuration "not-ready" is waiting for a Revision to become ready.`,
 				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionUnknown,
+				}, {
 					Type:    v1alpha1.RouteConditionReady,
 					Status:  corev1.ConditionUnknown,
 					Reason:  "RevisionMissing",
@@ -150,7 +151,7 @@ func TestReconcile(t *testing.T) {
 		}},
 		Key: "default/first-reconcile",
 	}, {
-		Name: "simple route becomes ready",
+		Name: "simple route becomes ready, ingress unknown",
 		Objects: []runtime.Object{
 			simpleRunLatest("default", "becomes-ready", "config", nil),
 			simpleReadyConfig("default", "config"),
@@ -160,7 +161,7 @@ func TestReconcile(t *testing.T) {
 			),
 		},
 		WantCreates: []metav1.Object{
-			resources.MakeVirtualService(
+			resources.MakeClusterIngress(
 				setDomain(simpleRunLatest("default", "becomes-ready", "config", nil), "becomes-ready.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -175,7 +176,6 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "becomes-ready", "config", nil)),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: simpleRunLatest("default", "becomes-ready", "config", &v1alpha1.RouteStatus{
@@ -184,6 +184,61 @@ func TestReconcile(t *testing.T) {
 				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "becomes-ready.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionUnknown,
+				}, {
+					Type:   v1alpha1.RouteConditionReady,
+					Status: corev1.ConditionUnknown,
+				}},
+				Traffic: []v1alpha1.TrafficTarget{{
+					RevisionName: "config-00001",
+					Percent:      100,
+				}},
+			}),
+		}},
+		Key: "default/becomes-ready",
+		// TODO(lichuqiang): config namespace validation in resource scope.
+		SkipNamespaceValidation: true,
+	}, {
+		Name: "simple route becomes ready",
+		Objects: []runtime.Object{
+			simpleRunLatest("default", "becomes-ready", "config", nil),
+			simpleReadyConfig("default", "config"),
+			simpleReadyRevision("default",
+				// Use the Revision name from the config.
+				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
+			),
+			simpleReadyIngress(
+				setDomain(simpleRunLatest("default", "becomes-ready", "config", nil), "becomes-ready.default.example.com"),
+				&traffic.TrafficConfig{
+					Targets: map[string][]traffic.RevisionTarget{
+						"": {{
+							TrafficTarget: v1alpha1.TrafficTarget{
+								// Use the Revision name from the config.
+								RevisionName: simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
+								Percent:      100,
+							},
+							Active: true,
+						}},
+					},
+				},
+			),
+		},
+		WantCreates: []metav1.Object{
+			simpleK8sService(simpleRunLatest("default", "becomes-ready", "config", nil)),
+		},
+		WantUpdates: []clientgotesting.UpdateActionImpl{{
+			Object: simpleRunLatest("default", "becomes-ready", "config", &v1alpha1.RouteStatus{
+				Domain:         "becomes-ready.default.example.com",
+				DomainInternal: "becomes-ready.default.svc.cluster.local",
+				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "becomes-ready.default.svc.cluster.local"},
+				Conditions: duckv1alpha1.Conditions{{
+					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -195,7 +250,8 @@ func TestReconcile(t *testing.T) {
 				}},
 			}),
 		}},
-		Key: "default/becomes-ready",
+		Key:                     "default/becomes-ready",
+		SkipNamespaceValidation: true,
 	}, {
 		Name: "failure creating k8s placeholder service",
 		// We induce a failure creating the placeholder service
@@ -210,41 +266,8 @@ func TestReconcile(t *testing.T) {
 				// Use the Revision name from the config.
 				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
 			),
-		},
-		WantCreates: []metav1.Object{
-			resources.MakeK8sService(simpleRunLatest("default", "create-svc-failure", "config", nil)),
-		},
-		WantUpdates: []clientgotesting.UpdateActionImpl{{
-			Object: simpleRunLatest("default", "create-svc-failure", "config", &v1alpha1.RouteStatus{
-				Conditions: duckv1alpha1.Conditions{{
-					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
-					Status: corev1.ConditionUnknown,
-				}, {
-					Type:   v1alpha1.RouteConditionReady,
-					Status: corev1.ConditionUnknown,
-				}},
-			}),
-		}},
-		Key: "default/create-svc-failure",
-	}, {
-		Name: "failure creating virtual service",
-		Objects: []runtime.Object{
-			simpleRunLatest("default", "vs-create-failure", "config", nil),
-			simpleReadyConfig("default", "config"),
-			simpleReadyRevision("default",
-				// Use the Revision name from the config.
-				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
-			),
-		},
-		// We induce a failure creating the VirtualService.
-		WantErr: true,
-		WithReactors: []clientgotesting.ReactionFunc{
-			InduceFailure("create", "virtualservices"),
-		},
-		WantCreates: []metav1.Object{
-			// This is the Create we see for the virtual service, but we induce a failure.
-			resources.MakeVirtualService(
-				setDomain(simpleRunLatest("default", "vs-create-failure", "config", nil), "vs-create-failure.default.example.com"),
+			simpleReadyIngress(
+				setDomain(simpleRunLatest("default", "create-svc-failure", "config", nil), "create-svc-failure.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
 						"": {{
@@ -258,15 +281,17 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "vs-create-failure", "config", nil)),
+		},
+		WantCreates: []metav1.Object{
+			simpleK8sService(simpleRunLatest("default", "create-svc-failure", "config", nil)),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
-			Object: simpleRunLatest("default", "vs-create-failure", "config", &v1alpha1.RouteStatus{
-				Domain:         "vs-create-failure.default.example.com",
-				DomainInternal: "vs-create-failure.default.svc.cluster.local",
-				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "vs-create-failure.default.svc.cluster.local"},
+			Object: simpleRunLatest("default", "create-svc-failure", "config", &v1alpha1.RouteStatus{
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionUnknown,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionUnknown,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -274,7 +299,60 @@ func TestReconcile(t *testing.T) {
 				}},
 			}),
 		}},
-		Key: "default/vs-create-failure",
+		Key:                     "default/create-svc-failure",
+		SkipNamespaceValidation: true,
+	}, {
+		Name: "failure creating cluster ingress",
+		Objects: []runtime.Object{
+			simpleRunLatest("default", "ingress-create-failure", "config", nil),
+			simpleReadyConfig("default", "config"),
+			simpleReadyRevision("default",
+				// Use the Revision name from the config.
+				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
+			),
+		},
+		// We induce a failure creating the ClusterIngress.
+		WantErr: true,
+		WithReactors: []clientgotesting.ReactionFunc{
+			InduceFailure("create", "clusteringresses"),
+		},
+		WantCreates: []metav1.Object{
+			// This is the Create we see for the cluter ingress, but we induce a failure.
+			resources.MakeClusterIngress(
+				setDomain(simpleRunLatest("default", "ingress-create-failure", "config", nil), "ingress-create-failure.default.example.com"),
+				&traffic.TrafficConfig{
+					Targets: map[string][]traffic.RevisionTarget{
+						"": {{
+							TrafficTarget: v1alpha1.TrafficTarget{
+								// Use the Revision name from the config.
+								RevisionName: simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
+								Percent:      100,
+							},
+							Active: true,
+						}},
+					},
+				},
+			),
+		},
+		WantUpdates: []clientgotesting.UpdateActionImpl{{
+			Object: simpleRunLatest("default", "ingress-create-failure", "config", &v1alpha1.RouteStatus{
+				Domain:         "ingress-create-failure.default.example.com",
+				DomainInternal: "ingress-create-failure.default.svc.cluster.local",
+				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "ingress-create-failure.default.svc.cluster.local"},
+				Conditions: duckv1alpha1.Conditions{{
+					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionUnknown,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionUnknown,
+				}, {
+					Type:   v1alpha1.RouteConditionReady,
+					Status: corev1.ConditionUnknown,
+				}},
+			}),
+		}},
+		Key:                     "default/ingress-create-failure",
+		SkipNamespaceValidation: true,
 	}, {
 		Name: "steady state",
 		Objects: []runtime.Object{
@@ -284,6 +362,9 @@ func TestReconcile(t *testing.T) {
 				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "steady-state.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -303,7 +384,7 @@ func TestReconcile(t *testing.T) {
 				// Use the Revision name from the config.
 				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
 			),
-			resources.MakeVirtualService(
+			simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "steady-state", "config", nil), "steady-state.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -318,7 +399,7 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "steady-state", "config", nil)),
+			simpleK8sService(simpleRunLatest("default", "steady-state", "config", nil)),
 		},
 		Key: "default/steady-state",
 	}, {
@@ -334,6 +415,9 @@ func TestReconcile(t *testing.T) {
 					Targetable:     &duckv1alpha1.Targetable{DomainInternal: "different-domain.default.svc.cluster.local"},
 					Conditions: duckv1alpha1.Conditions{{
 						Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+						Status: corev1.ConditionTrue,
+					}, {
+						Type:   v1alpha1.RouteConditionIngressReady,
 						Status: corev1.ConditionTrue,
 					}, {
 						Type:   v1alpha1.RouteConditionReady,
@@ -355,7 +439,7 @@ func TestReconcile(t *testing.T) {
 				// Use the Revision name from the config.
 				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
 			),
-			resources.MakeVirtualService(
+			simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "different-domain", "config", nil), "different-domain.default.another-example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -370,7 +454,7 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "different-domain", "config", nil)),
+			simpleK8sService(simpleRunLatest("default", "different-domain", "config", nil)),
 		},
 		Key: "default/different-domain",
 	}, {
@@ -382,6 +466,9 @@ func TestReconcile(t *testing.T) {
 				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "new-latest-created.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -406,7 +493,7 @@ func TestReconcile(t *testing.T) {
 			),
 			// This is the name of the new revision we're referencing above.
 			simpleNotReadyRevision("default", "config-00002"),
-			resources.MakeVirtualService(
+			simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "new-latest-created", "config", nil), "new-latest-created.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -421,7 +508,7 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "new-latest-created", "config", nil)),
+			simpleK8sService(simpleRunLatest("default", "new-latest-created", "config", nil)),
 		},
 		// A new LatestCreatedRevisionName on the Configuration alone should result in no changes to the Route.
 		Key: "default/new-latest-created",
@@ -434,6 +521,9 @@ func TestReconcile(t *testing.T) {
 				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "new-latest-ready.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -459,7 +549,7 @@ func TestReconcile(t *testing.T) {
 			),
 			// This is the name of the new revision we're referencing above.
 			simpleReadyRevision("default", "config-00002"),
-			resources.MakeVirtualService(
+			simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "new-latest-ready", "config", nil), "new-latest-ready.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -474,11 +564,11 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "new-latest-ready", "config", nil)),
+			simpleK8sService(simpleRunLatest("default", "new-latest-ready", "config", nil)),
 		},
 		// A new LatestReadyRevisionName on the Configuration should result in the new Revision being rolled out.
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
-			Object: resources.MakeVirtualService(
+			Object: simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "new-latest-ready", "config", nil), "new-latest-ready.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -502,6 +592,9 @@ func TestReconcile(t *testing.T) {
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
 					Status: corev1.ConditionTrue,
 				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionTrue,
+				}, {
 					Type:   v1alpha1.RouteConditionReady,
 					Status: corev1.ConditionTrue,
 				}},
@@ -511,21 +604,25 @@ func TestReconcile(t *testing.T) {
 				}},
 			}),
 		}},
-		Key: "default/new-latest-ready",
+		Key:                     "default/new-latest-ready",
+		SkipNamespaceValidation: true,
 	}, {
-		Name: "failure updating virtual service",
-		// Starting from the new latest ready, induce a failure updating the virtual service.
+		Name: "failure updating cluster ingress",
+		// Starting from the new latest ready, induce a failure updating the cluster ingress.
 		WantErr: true,
 		WithReactors: []clientgotesting.ReactionFunc{
-			InduceFailure("update", "virtualservices"),
+			InduceFailure("update", "clusteringresses"),
 		},
 		Objects: []runtime.Object{
-			simpleRunLatest("default", "update-vs-failure", "config", &v1alpha1.RouteStatus{
-				Domain:         "update-vs-failure.default.example.com",
-				DomainInternal: "update-vs-failure.default.svc.cluster.local",
-				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "update-vs-failure.default.svc.cluster.local"},
+			simpleRunLatest("default", "update-ci-failure", "config", &v1alpha1.RouteStatus{
+				Domain:         "update-ci-failure.default.example.com",
+				DomainInternal: "update-ci-failure.default.svc.cluster.local",
+				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "update-ci-failure.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -541,7 +638,7 @@ func TestReconcile(t *testing.T) {
 				addConfigLabel(
 					simpleReadyConfig("default", "config"),
 					// The Route controller attaches our label to this Configuration.
-					"serving.knative.dev/route", "update-vs-failure",
+					"serving.knative.dev/route", "update-ci-failure",
 				),
 				"config-00002",
 			)),
@@ -551,8 +648,8 @@ func TestReconcile(t *testing.T) {
 			),
 			// This is the name of the new revision we're referencing above.
 			simpleReadyRevision("default", "config-00002"),
-			resources.MakeVirtualService(
-				setDomain(simpleRunLatest("default", "update-vs-failure", "config", nil), "update-vs-failure.default.example.com"),
+			simpleReadyIngress(
+				setDomain(simpleRunLatest("default", "update-ci-failure", "config", nil), "update-ci-failure.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
 						"": {{
@@ -566,11 +663,11 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "update-vs-failure", "config", nil)),
+			simpleK8sService(simpleRunLatest("default", "update-ci-failure", "config", nil)),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
-			Object: resources.MakeVirtualService(
-				setDomain(simpleRunLatest("default", "update-vs-failure", "config", nil), "update-vs-failure.default.example.com"),
+			Object: simpleReadyIngress(
+				setDomain(simpleRunLatest("default", "update-ci-failure", "config", nil), "update-ci-failure.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
 						"": {{
@@ -585,7 +682,8 @@ func TestReconcile(t *testing.T) {
 				},
 			),
 		}},
-		Key: "default/update-vs-failure",
+		Key:                     "default/update-ci-failure",
+		SkipNamespaceValidation: true,
 	}, {
 		Name: "reconcile service mutation",
 		Objects: []runtime.Object{
@@ -595,6 +693,9 @@ func TestReconcile(t *testing.T) {
 				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "svc-mutation.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -614,7 +715,7 @@ func TestReconcile(t *testing.T) {
 				// Use the Revision name from the config.
 				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
 			),
-			resources.MakeVirtualService(
+			simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "svc-mutation", "config", nil), "svc-mutation.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -629,10 +730,10 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			mutateService(resources.MakeK8sService(simpleRunLatest("default", "svc-mutation", "config", nil))),
+			mutateService(simpleK8sService(simpleRunLatest("default", "svc-mutation", "config", nil))),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
-			Object: resources.MakeK8sService(simpleRunLatest("default", "svc-mutation", "config", nil)),
+			Object: simpleK8sService(simpleRunLatest("default", "svc-mutation", "config", nil)),
 		}},
 		Key: "default/svc-mutation",
 	}, {
@@ -649,6 +750,9 @@ func TestReconcile(t *testing.T) {
 				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "svc-mutation.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -669,7 +773,7 @@ func TestReconcile(t *testing.T) {
 				// Use the Revision name from the config.
 				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
 			),
-			resources.MakeVirtualService(
+			simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "svc-mutation", "config", nil), "svc-mutation.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -684,10 +788,10 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			mutateService(resources.MakeK8sService(simpleRunLatest("default", "svc-mutation", "config", nil))),
+			mutateService(simpleK8sService(simpleRunLatest("default", "svc-mutation", "config", nil))),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
-			Object: resources.MakeK8sService(simpleRunLatest("default", "svc-mutation", "config", nil)),
+			Object: simpleK8sService(simpleRunLatest("default", "svc-mutation", "config", nil)),
 		}},
 		Key: "default/svc-mutation",
 	}, {
@@ -699,6 +803,9 @@ func TestReconcile(t *testing.T) {
 				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "cluster-ip.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -718,7 +825,7 @@ func TestReconcile(t *testing.T) {
 				// Use the Revision name from the config.
 				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
 			),
-			resources.MakeVirtualService(
+			simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "cluster-ip", "config", nil), "cluster-ip.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -733,18 +840,21 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			setClusterIP(resources.MakeK8sService(simpleRunLatest("default", "cluster-ip", "config", nil)), "127.0.0.1"),
+			setClusterIP(simpleK8sService(simpleRunLatest("default", "cluster-ip", "config", nil)), "127.0.0.1"),
 		},
 		Key: "default/cluster-ip",
 	}, {
-		Name: "reconcile virtual service mutation",
+		Name: "reconcile cluster ingress mutation",
 		Objects: []runtime.Object{
-			simpleRunLatest("default", "virt-svc-mutation", "config", &v1alpha1.RouteStatus{
-				Domain:         "virt-svc-mutation.default.example.com",
-				DomainInternal: "virt-svc-mutation.default.svc.cluster.local",
-				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "virt-svc-mutation.default.svc.cluster.local"},
+			simpleRunLatest("default", "ingress-mutation", "config", &v1alpha1.RouteStatus{
+				Domain:         "ingress-mutation.default.example.com",
+				DomainInternal: "ingress-mutation.default.svc.cluster.local",
+				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "ingress-mutation.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -758,14 +868,14 @@ func TestReconcile(t *testing.T) {
 			addConfigLabel(
 				simpleReadyConfig("default", "config"),
 				// The Route controller attaches our label to this Configuration.
-				"serving.knative.dev/route", "virt-svc-mutation",
+				"serving.knative.dev/route", "ingress-mutation",
 			),
 			simpleReadyRevision("default",
 				// Use the Revision name from the config.
 				simpleReadyConfig("default", "config").Status.LatestReadyRevisionName,
 			),
-			mutateVirtualService(resources.MakeVirtualService(
-				setDomain(simpleRunLatest("default", "virt-svc-mutation", "config", nil), "virt-svc-mutation.default.example.com"),
+			mutateIngress(simpleReadyIngress(
+				setDomain(simpleRunLatest("default", "ingress-mutation", "config", nil), "ingress-mutation.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
 						"": {{
@@ -779,11 +889,11 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			)),
-			resources.MakeK8sService(simpleRunLatest("default", "virt-svc-mutation", "config", nil)),
+			simpleK8sService(simpleRunLatest("default", "ingress-mutation", "config", nil)),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
-			Object: resources.MakeVirtualService(
-				setDomain(simpleRunLatest("default", "virt-svc-mutation", "config", nil), "virt-svc-mutation.default.example.com"),
+			Object: simpleReadyIngress(
+				setDomain(simpleRunLatest("default", "ingress-mutation", "config", nil), "ingress-mutation.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
 						"": {{
@@ -798,7 +908,8 @@ func TestReconcile(t *testing.T) {
 				},
 			),
 		}},
-		Key: "default/virt-svc-mutation",
+		Key:                     "default/ingress-mutation",
+		SkipNamespaceValidation: true,
 	}, {
 		Name: "switch to a different config",
 		Objects: []runtime.Object{
@@ -809,6 +920,9 @@ func TestReconcile(t *testing.T) {
 				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "change-configs.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -835,7 +949,7 @@ func TestReconcile(t *testing.T) {
 				// Use the Revision name from the config.
 				simpleReadyConfig("default", "newconfig").Status.LatestReadyRevisionName,
 			),
-			resources.MakeVirtualService(
+			simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "change-configs", "oldconfig", nil), "change-configs.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -850,11 +964,11 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "change-configs", "oldconfig", nil)),
+			simpleK8sService(simpleRunLatest("default", "change-configs", "oldconfig", nil)),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			// Updated to point to "newconfig" things.
-			Object: resources.MakeVirtualService(
+			Object: simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "change-configs", "newconfig", nil), "change-configs.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -879,6 +993,9 @@ func TestReconcile(t *testing.T) {
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
 					Status: corev1.ConditionTrue,
 				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionTrue,
+				}, {
 					Type:   v1alpha1.RouteConditionReady,
 					Status: corev1.ConditionTrue,
 				}},
@@ -888,14 +1005,12 @@ func TestReconcile(t *testing.T) {
 				}},
 			}),
 		}},
-		Key: "default/change-configs",
+		Key:                     "default/change-configs",
+		SkipNamespaceValidation: true,
 	}, {
 		Name: "configuration missing",
 		Objects: []runtime.Object{
 			simpleRunLatest("default", "config-missing", "not-found", nil),
-		},
-		WantCreates: []metav1.Object{
-			resources.MakeK8sService(simpleRunLatest("default", "config-missing", "not-found", nil)),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: simpleRunLatest("default", "config-missing", "not-found", &v1alpha1.RouteStatus{
@@ -907,6 +1022,9 @@ func TestReconcile(t *testing.T) {
 					Status:  corev1.ConditionFalse,
 					Reason:  "ConfigurationMissing",
 					Message: `Configuration "not-found" referenced in traffic not found.`,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionUnknown,
 				}, {
 					Type:    v1alpha1.RouteConditionReady,
 					Status:  corev1.ConditionFalse,
@@ -922,9 +1040,6 @@ func TestReconcile(t *testing.T) {
 			simplePinned("default", "missing-revision-direct", "not-found", nil),
 			simpleReadyConfig("default", "config"),
 		},
-		WantCreates: []metav1.Object{
-			resources.MakeK8sService(simpleRunLatest("default", "missing-revision-direct", "config", nil)),
-		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: simplePinned("default", "missing-revision-direct", "not-found", &v1alpha1.RouteStatus{
 				Domain:         "missing-revision-direct.default.example.com",
@@ -935,6 +1050,9 @@ func TestReconcile(t *testing.T) {
 					Status:  corev1.ConditionFalse,
 					Reason:  "RevisionMissing",
 					Message: `Revision "not-found" referenced in traffic not found.`,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionUnknown,
 				}, {
 					Type:    v1alpha1.RouteConditionReady,
 					Status:  corev1.ConditionFalse,
@@ -950,9 +1068,6 @@ func TestReconcile(t *testing.T) {
 			simpleRunLatest("default", "missing-revision-indirect", "config", nil),
 			simpleReadyConfig("default", "config"),
 		},
-		WantCreates: []metav1.Object{
-			resources.MakeK8sService(simpleRunLatest("default", "missing-revision-indirect", "config", nil)),
-		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: simpleRunLatest("default", "missing-revision-indirect", "config", &v1alpha1.RouteStatus{
 				Domain:         "missing-revision-indirect.default.example.com",
@@ -963,6 +1078,9 @@ func TestReconcile(t *testing.T) {
 					Status:  corev1.ConditionFalse,
 					Reason:  "RevisionMissing",
 					Message: `Revision "config-00001" referenced in traffic not found.`,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionUnknown,
 				}, {
 					Type:    v1alpha1.RouteConditionReady,
 					Status:  corev1.ConditionFalse,
@@ -988,7 +1106,7 @@ func TestReconcile(t *testing.T) {
 			),
 		},
 		WantCreates: []metav1.Object{
-			resources.MakeVirtualService(
+			resources.MakeClusterIngress(
 				setDomain(simpleRunLatest("default", "pinned-becomes-ready", "config", nil), "pinned-becomes-ready.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -1003,7 +1121,6 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "pinned-becomes-ready", "config", nil)),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: simplePinned("default", "pinned-becomes-ready",
@@ -1016,8 +1133,11 @@ func TestReconcile(t *testing.T) {
 						Type:   v1alpha1.RouteConditionAllTrafficAssigned,
 						Status: corev1.ConditionTrue,
 					}, {
+						Type:   v1alpha1.RouteConditionIngressReady,
+						Status: corev1.ConditionUnknown,
+					}, {
 						Type:   v1alpha1.RouteConditionReady,
-						Status: corev1.ConditionTrue,
+						Status: corev1.ConditionUnknown,
 					}},
 					Traffic: []v1alpha1.TrafficTarget{{
 						// TODO(#1495): This is established thru labels instead of OwnerReferences.
@@ -1027,7 +1147,8 @@ func TestReconcile(t *testing.T) {
 					}},
 				}),
 		}},
-		Key: "default/pinned-becomes-ready",
+		Key:                     "default/pinned-becomes-ready",
+		SkipNamespaceValidation: true,
 	}, {
 		Name: "traffic split becomes ready",
 		Objects: []runtime.Object{
@@ -1057,7 +1178,7 @@ func TestReconcile(t *testing.T) {
 			),
 		},
 		WantCreates: []metav1.Object{
-			resources.MakeVirtualService(
+			resources.MakeClusterIngress(
 				setDomain(routeWithTraffic("default", "named-traffic-split", nil,
 					v1alpha1.TrafficTarget{
 						ConfigurationName: "blue",
@@ -1086,14 +1207,6 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(routeWithTraffic("default", "named-traffic-split", nil,
-				v1alpha1.TrafficTarget{
-					ConfigurationName: "blue",
-					Percent:           50,
-				}, v1alpha1.TrafficTarget{
-					ConfigurationName: "green",
-					Percent:           50,
-				})),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
 			Object: routeWithTraffic("default", "named-traffic-split", &v1alpha1.RouteStatus{
@@ -1104,8 +1217,11 @@ func TestReconcile(t *testing.T) {
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
 					Status: corev1.ConditionTrue,
 				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionUnknown,
+				}, {
 					Type:   v1alpha1.RouteConditionReady,
-					Status: corev1.ConditionTrue,
+					Status: corev1.ConditionUnknown,
 				}},
 				Traffic: []v1alpha1.TrafficTarget{{
 					RevisionName: "blue-00001",
@@ -1122,7 +1238,8 @@ func TestReconcile(t *testing.T) {
 				Percent:           50,
 			}),
 		}},
-		Key: "default/named-traffic-split",
+		Key:                     "default/named-traffic-split",
+		SkipNamespaceValidation: true,
 	}, {
 		Name: "change route configuration",
 		// Start from a steady state referencing "blue", and modify the route spec to point to "green" instead.
@@ -1133,6 +1250,9 @@ func TestReconcile(t *testing.T) {
 				Targetable:     &duckv1alpha1.Targetable{DomainInternal: "switch-configs.default.svc.cluster.local"},
 				Conditions: duckv1alpha1.Conditions{{
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
+					Status: corev1.ConditionTrue,
+				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
 					Status: corev1.ConditionTrue,
 				}, {
 					Type:   v1alpha1.RouteConditionReady,
@@ -1158,7 +1278,7 @@ func TestReconcile(t *testing.T) {
 				// Use the Revision name from the config.
 				simpleReadyConfig("default", "green").Status.LatestReadyRevisionName,
 			),
-			resources.MakeVirtualService(
+			simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "switch-configs", "blue", nil), "switch-configs.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -1173,10 +1293,10 @@ func TestReconcile(t *testing.T) {
 					},
 				},
 			),
-			resources.MakeK8sService(simpleRunLatest("default", "switch-configs", "blue", nil)),
+			simpleK8sService(simpleRunLatest("default", "switch-configs", "blue", nil)),
 		},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
-			Object: resources.MakeVirtualService(
+			Object: simpleReadyIngress(
 				setDomain(simpleRunLatest("default", "switch-configs", "green", nil), "switch-configs.default.example.com"),
 				&traffic.TrafficConfig{
 					Targets: map[string][]traffic.RevisionTarget{
@@ -1200,6 +1320,9 @@ func TestReconcile(t *testing.T) {
 					Type:   v1alpha1.RouteConditionAllTrafficAssigned,
 					Status: corev1.ConditionTrue,
 				}, {
+					Type:   v1alpha1.RouteConditionIngressReady,
+					Status: corev1.ConditionTrue,
+				}, {
 					Type:   v1alpha1.RouteConditionReady,
 					Status: corev1.ConditionTrue,
 				}},
@@ -1209,7 +1332,8 @@ func TestReconcile(t *testing.T) {
 				}},
 			}),
 		}},
-		Key: "default/switch-configs",
+		Key:                     "default/switch-configs",
+		SkipNamespaceValidation: true,
 	}}
 
 	// TODO(mattmoor): Revision inactive (direct reference)
@@ -1223,7 +1347,7 @@ func TestReconcile(t *testing.T) {
 			configurationLister:  listers.GetConfigurationLister(),
 			revisionLister:       listers.GetRevisionLister(),
 			serviceLister:        listers.GetK8sServiceLister(),
-			virtualServiceLister: listers.GetVirtualServiceLister(),
+			clusterIngressLister: listers.GetClusterIngressLister(),
 			tracker:              &rtesting.NullTracker{},
 			configStore: &testConfigStore{
 				config: ReconcilerTestConfig(),
@@ -1232,10 +1356,10 @@ func TestReconcile(t *testing.T) {
 	}))
 }
 
-func mutateVirtualService(vs *istiov1alpha3.VirtualService) *istiov1alpha3.VirtualService {
+func mutateIngress(ci *netv1alpha1.ClusterIngress) *netv1alpha1.ClusterIngress {
 	// Thor's Hammer
-	vs.Spec = istiov1alpha3.VirtualServiceSpec{}
-	return vs
+	ci.Spec = netv1alpha1.IngressSpec{}
+	return ci
 }
 
 func mutateService(svc *corev1.Service) *corev1.Service {
@@ -1328,6 +1452,36 @@ func simpleFailedConfig(namespace, name string) *v1alpha1.Configuration {
 	cfg.Status.InitializeConditions()
 	cfg.Status.MarkLatestCreatedFailed(name+"-00001", "should have used ko")
 	return cfg
+}
+
+func simpleK8sService(r *v1alpha1.Route) *corev1.Service {
+	// omit the error here, as we are sure the loadbalancer info is porvided.
+	// return the service instance only, so that the result can be used in TableRow.
+	svc, _ := resources.MakeK8sService(r, &netv1alpha1.ClusterIngress{Status: readyIngressStatus()})
+
+	return svc
+}
+
+func simpleReadyIngress(r *v1alpha1.Route, tc *traffic.TrafficConfig) *netv1alpha1.ClusterIngress {
+	return ingressWithStatus(r, tc, readyIngressStatus())
+}
+
+func readyIngressStatus() netv1alpha1.IngressStatus {
+	status := netv1alpha1.IngressStatus{}
+	status.InitializeConditions()
+	status.MarkNetworkConfigured()
+	status.MarkLoadBalancerReady([]netv1alpha1.LoadBalancerIngressStatus{
+		{DomainInternal: resourcenames.K8sGatewayServiceFullname},
+	})
+
+	return status
+}
+
+func ingressWithStatus(r *v1alpha1.Route, tc *traffic.TrafficConfig, status netv1alpha1.IngressStatus) *netv1alpha1.ClusterIngress {
+	ci := resources.MakeClusterIngress(r, tc)
+	ci.Status = status
+
+	return ci
 }
 
 func patchRemoveLabel(namespace, name, key, version string) clientgotesting.PatchActionImpl {
