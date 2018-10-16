@@ -41,3 +41,8 @@ func VirtualService(route *v1alpha1.Route) string {
 func K8sServiceFullname(route *v1alpha1.Route) string {
 	return reconciler.GetK8sServiceFullname(K8sService(route), route.Namespace)
 }
+
+// ClusterIngress returns the name of the ClusterIngress child resource for given Route.
+func ClusterIngress(route *v1alpha1.Route) string {
+	return route.Name
+}
