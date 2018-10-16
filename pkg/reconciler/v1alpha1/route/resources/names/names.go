@@ -34,10 +34,6 @@ func K8sService(route *v1alpha1.Route) string {
 	return route.Name
 }
 
-func VirtualService(route *v1alpha1.Route) string {
-	return route.Name
-}
-
 func K8sServiceFullname(route *v1alpha1.Route) string {
 	return reconciler.GetK8sServiceFullname(K8sService(route), route.Namespace)
 }
