@@ -108,16 +108,26 @@ func makeVirtualServiceRoute(hosts []string, http *v1alpha1.HTTPClusterIngressPa
 			Weight: split.Percent,
 		})
 	}
-	return &v1alpha3.HTTPRoute{
-		Match:   matches,
-		Route:   weights,
-		Timeout: http.Timeout.Duration.String(),
-		Retries: &v1alpha3.HTTPRetry{
-			Attempts:      http.Retries.Attempts,
-			PerTryTimeout: http.Retries.PerTryTimeout.Duration.String(),
-		},
+	r := &v1alpha3.HTTPRoute{
+		Match:         matches,
+		Route:         weights,
 		AppendHeaders: http.AppendHeaders,
 	}
+
+	if http.Timeout != nil {
+		r.Timeout = http.Timeout.Duration.String()
+	}
+
+	if http.Retries != nil {
+		r.Retries = &v1alpha3.HTTPRetry{
+			Attempts: http.Retries.Attempts,
+		}
+		if http.Retries.PerTryTimeout != nil {
+			r.Retries.PerTryTimeout = http.Retries.PerTryTimeout.Duration.String()
+		}
+	}
+
+	return r
 }
 
 func makeMatch(host string, pathRegExp string) v1alpha3.HTTPMatchRequest {
