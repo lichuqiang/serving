@@ -123,6 +123,8 @@ func (s ClusterIngressBackendSplit) Validate() *apis.FieldError {
 	return all.Also(s.ClusterIngressBackend.Validate())
 }
 
+// Validate inspects the fields of the type ClusterIngressBackend
+// to determine if they are valid.
 func (b ClusterIngressBackend) Validate() *apis.FieldError {
 	// Must not be empty.
 	if equality.Semantic.DeepEqual(b, ClusterIngressBackend{}) {

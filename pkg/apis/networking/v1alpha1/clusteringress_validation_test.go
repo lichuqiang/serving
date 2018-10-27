@@ -163,6 +163,7 @@ func TestIngressSpecValidation(t *testing.T) {
 					Paths: []HTTPClusterIngressPath{{
 						Splits: []ClusterIngressBackendSplit{{
 							ClusterIngressBackend: ClusterIngressBackend{},
+							Percent:               100,
 						}},
 					}},
 				},
