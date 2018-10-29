@@ -129,14 +129,16 @@ func NewControllerWithClock(
 		Handler: cache.ResourceEventHandlerFuncs{
 			AddFunc:    impl.EnqueueControllerOf,
 			UpdateFunc: controller.PassNew(impl.EnqueueControllerOf),
+			DeleteFunc: impl.EnqueueControllerOf,
 		},
 	})
 
 	clusterIngressInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: controller.Filter(v1alpha1.SchemeGroupVersion.WithKind("Route")),
 		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc:    c.enqueueOwnerRoute(impl),
-			UpdateFunc: controller.PassNew(c.enqueueOwnerRoute(impl)),
+			AddFunc:    impl.EnqueueLabelOf(serving.RouteNamespaceLabelKey, serving.RouteLabelKey),
+			UpdateFunc: controller.PassNew(impl.EnqueueLabelOf(serving.RouteNamespaceLabelKey, serving.RouteLabelKey)),
+			DeleteFunc: impl.EnqueueLabelOf(serving.RouteNamespaceLabelKey, serving.RouteLabelKey),
 		},
 	})
 
