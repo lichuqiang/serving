@@ -146,48 +146,50 @@ func (c *Impl) EnqueueControllerOf(obj interface{}) {
 	}
 }
 
-// EnqueueLabelOf takes a resource, identifies its controller resource through
-// given namespace and name labels, converts it into a namespace/name string,
-// and passes that to EnqueueKey.
+// EnqueueLabelOf returns with an Enqueue func that takes a resource,
+// identifies its controller resource through given namespace and name labels,
+// converts it into a namespace/name string, and passes that to EnqueueKey.
 // Callers should pass in an empty string as namespace label key for obj
 // whose controller is of cluster-scoped resource.
-func (c *Impl) EnqueueLabelOf(obj interface{}, namespaceLabel, nameLabel string) {
-	object, err := meta.Accessor(obj)
-	if err != nil {
-		c.logger.Debug(zap.Error(err))
-		// To handle obj deletion, try to fetch info from DeletedFinalStateUnknown.
-		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-		if !ok {
-			c.logger.Errorf("Couldn't get object from tombstone %#v", obj)
-			return
+func (c *Impl) EnqueueLabelOf(namespaceLabel, nameLabel string) func(obj interface{}) {
+	return func(obj interface{}) {
+		object, err := meta.Accessor(obj)
+		if err != nil {
+			c.logger.Debug(zap.Error(err))
+			// To handle obj deletion, try to fetch info from DeletedFinalStateUnknown.
+			tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+			if !ok {
+				c.logger.Errorf("Couldn't get object from tombstone %#v", obj)
+				return
+			}
+			object, ok = tombstone.Obj.(metav1.Object)
+			if !ok {
+				c.logger.Errorf("The object that Tombstone contained is not of metav1.Object %#v", obj)
+				return
+			}
 		}
-		object, ok = tombstone.Obj.(metav1.Object)
-		if !ok {
-			c.logger.Errorf("The object that Tombstone contained is not of metav1.Object %#v", obj)
-			return
-		}
-	}
 
-	labels := object.GetLabels()
-	controllerKey, ok := labels[nameLabel]
-	if !ok {
-		c.logger.Errorf("Object %s/%s does not have a referring name label %s",
-			object.GetNamespace(), object.GetName(), nameLabel)
-		return
-	}
-
-	if namespaceLabel != "" {
-		controllerNamespace, ok := labels[namespaceLabel]
+		labels := object.GetLabels()
+		controllerKey, ok := labels[nameLabel]
 		if !ok {
-			c.logger.Errorf("Object %s/%s does not have a referring namespace label %s",
-				object.GetNamespace(), object.GetName(), namespaceLabel)
+			c.logger.Errorf("Object %s/%s does not have a referring name label %s",
+				object.GetNamespace(), object.GetName(), nameLabel)
 			return
 		}
 
-		controllerKey = fmt.Sprintf("%s/%s", controllerNamespace, controllerKey)
-	}
+		if namespaceLabel != "" {
+			controllerNamespace, ok := labels[namespaceLabel]
+			if !ok {
+				c.logger.Errorf("Object %s/%s does not have a referring namespace label %s",
+					object.GetNamespace(), object.GetName(), namespaceLabel)
+				return
+			}
 
-	c.EnqueueKey(controllerKey)
+			controllerKey = fmt.Sprintf("%s/%s", controllerNamespace, controllerKey)
+		}
+
+		c.EnqueueKey(controllerKey)
+	}
 }
 
 // EnqueueKey takes a namespace/name string and puts it onto the work queue.
