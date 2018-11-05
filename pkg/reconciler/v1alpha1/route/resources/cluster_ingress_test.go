@@ -146,7 +146,6 @@ func TestGetRouteDomains_NamelessTarget(t *testing.T) {
 		"test-route.test-ns.svc.cluster.local",
 		"test-route.test-ns.svc",
 		"test-route.test-ns",
-		"test-route",
 	}
 	domains := getRouteDomains("", r, base)
 	if diff := cmp.Diff(expected, domains); diff != "" {
