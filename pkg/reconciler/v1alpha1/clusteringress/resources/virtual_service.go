@@ -17,6 +17,7 @@ limitations under the License.
 package resources
 
 import (
+	"fmt"
 	"sort"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +30,7 @@ import (
 	"github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	"github.com/knative/serving/pkg/apis/serving"
 	"github.com/knative/serving/pkg/reconciler"
+	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/prober"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/resources/names"
 	"github.com/knative/serving/pkg/system"
 )
@@ -78,6 +80,9 @@ func makeVirtualServiceSpec(ci *v1alpha1.ClusterIngress) *v1alpha3.VirtualServic
 			spec.Http = append(spec.Http, *makeVirtualServiceRoute(hosts, &p))
 		}
 	}
+	// Add route for probe into VirtualService.
+	spec.Http = append(spec.Http, *probeRoute(ci))
+
 	return &spec
 }
 
@@ -120,6 +125,25 @@ func makeVirtualServiceRoute(hosts []string, http *v1alpha1.HTTPClusterIngressPa
 	}
 }
 
+func probeRoute(ci *v1alpha1.ClusterIngress) *v1alpha3.HTTPRoute {
+	probeHost := fmt.Sprintf("%s-%v.%s", ci.Name, ci.Spec.Generation, system.Namespace)
+	matches := []v1alpha3.HTTPMatchRequest{}
+	matches = append(matches, makeMatch(probeHost, ""))
+	weights := []v1alpha3.DestinationWeight{{
+		Destination: v1alpha3.Destination{
+			Host: reconciler.GetK8sServiceFullname(
+				prober.ProbeServiceName, system.Namespace),
+			Port: makePortSelector(intstr.FromInt(prober.ProbeServicePort)),
+		},
+		Weight: 100,
+	}}
+
+	return &v1alpha3.HTTPRoute{
+		Match: matches,
+		Route: weights,
+	}
+}
+
 func makeMatch(host string, pathRegExp string) v1alpha3.HTTPMatchRequest {
 	match := v1alpha3.HTTPMatchRequest{
 		Authority: &istiov1alpha1.StringMatch{
@@ -147,6 +171,11 @@ func getHosts(ci *v1alpha1.ClusterIngress) []string {
 			}
 		}
 	}
+
+	// Append the Host for probe
+	probeHost := fmt.Sprintf("%s-%v.%s", ci.Name, ci.Spec.Generation, system.Namespace)
+	unique = append(unique, probeHost)
+
 	// Sort the names to give a deterministic ordering.
 	sort.Strings(unique)
 	return unique

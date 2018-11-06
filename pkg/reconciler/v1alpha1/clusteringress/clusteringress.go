@@ -36,6 +36,8 @@ import (
 	informers "github.com/knative/serving/pkg/client/informers/externalversions/networking/v1alpha1"
 	listers "github.com/knative/serving/pkg/client/listers/networking/v1alpha1"
 	"github.com/knative/serving/pkg/reconciler"
+	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/prober"
+	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/prober/status"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/resources"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/resources/names"
 )
@@ -49,6 +51,9 @@ type Reconciler struct {
 	// listers index properties about resources
 	clusterIngressLister listers.ClusterIngressLister
 	virtualServiceLister istiolisters.VirtualServiceLister
+
+	// prober to update LoadBalancer status in ingress instances.
+	prober prober.Manager
 }
 
 // Check that our Reconciler implements controller.Reconciler
@@ -68,6 +73,11 @@ func NewController(
 		virtualServiceLister: virtualServiceInformer.Lister(),
 	}
 	impl := controller.NewImpl(c, c.Logger, "ClusterIngresses", reconciler.MustNewStatsReporter("ClusterIngress", c.Logger))
+
+	statusManager := status.NewManager(
+		opt.ServingClientSet.NetworkingV1alpha1().ClusterIngresses(),
+		clusterIngressInformer.Lister())
+	c.prober = prober.NewManager(statusManager)
 
 	c.Logger.Info("Setting up event handlers")
 	clusterIngressInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -162,13 +172,14 @@ func (c *Reconciler) reconcile(ctx context.Context, ci *v1alpha1.ClusterIngress)
 		// when error reconciling VirtualService?
 		return err
 	}
-	// As underlying network programming (VirtualService now) is stateless,
-	// here we simply mark the ingress as ready if the VirtualService
-	// is successfully synced.
+
 	ci.Status.MarkNetworkConfigured()
-	ci.Status.MarkLoadBalancerReady([]v1alpha1.LoadBalancerIngressStatus{
+	ci.Status.InitLoadBalancerReady([]v1alpha1.LoadBalancerIngressStatus{
 		{DomainInternal: names.K8sGatewayServiceFullname},
 	})
+	// Leave LoadBalancer status to networking prober for update.
+	c.prober.Add(ci)
+
 	logger.Info("ClusterIngress successfully synced")
 	return nil
 }
