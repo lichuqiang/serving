@@ -90,7 +90,7 @@ func (p *prober) probe(ingress string, generation int64) (res status.Result) {
 			res.Message = fmt.Sprintf("failed to get ip/port from endpoint: %v", subset)
 			return
 		}
-		targets = append(targets, fmt.Sprintf("%s:%s", instanceIP, instancePort))
+		targets = append(targets, fmt.Sprintf("http://%s:%s", instanceIP, instancePort))
 	}
 
 	if len(targets) == 0 {

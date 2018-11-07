@@ -21,12 +21,11 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/knative/pkg/apis/duck"
 	"github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	clientset "github.com/knative/serving/pkg/client/clientset/versioned/typed/networking/v1alpha1"
 	listers "github.com/knative/serving/pkg/client/listers/networking/v1alpha1"
 )
-
-var patchStatusFmt = `{"status":{"conditions":[{"type":%q, "status":%q, "reason":%q, "message":%q}]}}`
 
 // Result is a collection of probe result that are needed to
 // set status.
@@ -68,12 +67,21 @@ func (m *manager) SetLoadBalancerReadiness(ingress *v1alpha1.ClusterIngress, res
 		return fmt.Errorf("received ClusterIngress %s (generation %v) is stale", ingress.Name, ingress.Spec.Generation)
 	}
 
-	updatePatch := fmt.Sprintf(patchStatusFmt, v1alpha1.ClusterIngressConditionLoadBalancerReady, "False", res.Reason, res.Message)
+	newIngress := ingress.DeepCopy()
+	newIngress.Status.MarkLoadBalancerNotReady(res.Reason, res.Message)
 	if res.Ready {
-		updatePatch = fmt.Sprintf(patchStatusFmt, v1alpha1.ClusterIngressConditionLoadBalancerReady, "True", res.Reason, res.Message)
+		newIngress.Status.MarkLoadBalancerReady()
 	}
 
-	_, err := m.ingressClient.Patch(ingress.Name, types.StrategicMergePatchType, []byte(updatePatch), "status")
+	patch, err := duck.CreateMergePatch(ingress, newIngress)
+	if err != nil {
+		return err
+	}
+
+	// TODO(lichuqiang): consider to improve this if Strategic Merge Patch
+	// on CRDs is supported on k8s side later.
+	_, err = m.ingressClient.Patch(ingress.Name, types.MergePatchType, patch)
+
 	return err
 }
 

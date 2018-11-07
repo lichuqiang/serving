@@ -336,9 +336,17 @@ func (cis *IngressStatus) InitLoadBalancerReady(lbs []LoadBalancerIngressStatus)
 	for _, lb := range lbs {
 		cis.LoadBalancer.Ingress = append(cis.LoadBalancer.Ingress, lb)
 	}
-	reason := "Uninitialized"
-	msg := "Waiting for networking prober to update"
-	clusterIngressCondSet.Manage(cis).MarkUnknown(ClusterIngressConditionLoadBalancerReady, reason, msg)
+	clusterIngressCondSet.Manage(cis).MarkUnknown(ClusterIngressConditionLoadBalancerReady,
+		"Uninitialized",
+		"Waiting for networking prober to update")
+}
+
+func (cis *IngressStatus) MarkLoadBalancerReady() {
+	clusterIngressCondSet.Manage(cis).MarkTrue(ClusterIngressConditionLoadBalancerReady)
+}
+
+func (cis *IngressStatus) MarkLoadBalancerNotReady(reason, msg string) {
+	clusterIngressCondSet.Manage(cis).MarkFalse(ClusterIngressConditionLoadBalancerReady, reason, msg)
 }
 
 // IsReady looks at the conditions and if the Status has a condition
