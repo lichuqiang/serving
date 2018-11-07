@@ -28,6 +28,7 @@ import (
 	"github.com/knative/serving/pkg/apis/networking/v1alpha1"
 	clientset "github.com/knative/serving/pkg/client/clientset/versioned/typed/networking/v1alpha1"
 	listers "github.com/knative/serving/pkg/client/listers/networking/v1alpha1"
+	"github.com/knative/serving/pkg/http/h2c"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/prober/status"
 )
 
@@ -92,7 +93,7 @@ func (m *manager) Start(stopCh <-chan struct{}) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("probe request received"))
 	})
-	go http.ListenAndServe(":7070", mux)
+	go h2c.ListenAndServe(":7070", mux)
 
 	defer runtime.HandleCrash()
 	defer m.workQueue.ShutDown()

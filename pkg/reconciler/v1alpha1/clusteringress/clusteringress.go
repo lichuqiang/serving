@@ -129,18 +129,10 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 		// This is important because the copy we loaded from the informer's
 		// cache may be stale and we don't want to overwrite a prior update
 		// to status with this stale state.
-	} else {
-		updated, err := c.updateStatus(ctx, ci)
-		if err != nil {
-			logger.Warn("Failed to update clusterIngress status", zap.Error(err))
-			c.Recorder.Eventf(ci, corev1.EventTypeWarning, "UpdateFailed",
-				"Failed to update status for ClusterIngress %q: %v", ci.Name, err)
-			return err
-		}
-
-		// Enqueue the ingress instance after status update,
-		// to avoid generation mismatch.
-		c.prober.Add(updated)
+	} else if _, err := c.updateStatus(ctx, ci); err != nil {
+		logger.Warn("Failed to update clusterIngress status", zap.Error(err))
+		c.Recorder.Eventf(ci, corev1.EventTypeWarning, "UpdateFailed",
+			"Failed to update status for ClusterIngress %q: %v", ci.Name, err)
 	}
 	return err
 }
@@ -188,6 +180,7 @@ func (c *Reconciler) reconcile(ctx context.Context, ci *v1alpha1.ClusterIngress)
 	ci.Status.InitLoadBalancerReady([]v1alpha1.LoadBalancerIngressStatus{
 		{DomainInternal: names.K8sGatewayServiceFullname},
 	})
+	c.prober.Add(ci)
 
 	logger.Info("ClusterIngress successfully synced")
 	return nil
