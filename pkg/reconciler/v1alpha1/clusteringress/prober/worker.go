@@ -47,11 +47,8 @@ func (w *worker) run() (shouldRetry bool) {
 		return false
 	}
 
-	result, err := w.probeManager.prober.probe(w.ingress.Name, w.ingress.Spec.Generation)
-	if err != nil {
-		// Error during probe, need retry.
-		return true
-	}
+	result := w.probeManager.prober.probe(w.ingress.Name, w.ingress.Spec.Generation)
+
 	// upload the probe results.
 	if err := w.probeManager.statusManager.SetLoadBalancerReadiness(w.ingress, result); err != nil {
 		// Failed to update ingress status, need retry.

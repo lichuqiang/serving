@@ -57,13 +57,17 @@ func newProber(endpointsLister corev1listers.EndpointsLister) *prober {
 	}
 }
 
-func (p *prober) probe(ingress string, generation int64) (status.Result, error) {
-	res := status.Result{}
+func (p *prober) probe(ingress string, generation int64) (res status.Result) {
+	res = status.Result{
+		Ready:  false,
+		Reason: "probe failed",
+	}
 
 	// Fetch the enpoints of ingress gateway.
 	endpoints, err := p.endpointsLister.Endpoints(ingressGatewayNamespace).Get(ingressGatewayService)
 	if err != nil {
-		return res, err
+		res.Message = fmt.Sprintf("failed to get ingress gateway endpoints: %v", err)
+		return
 	}
 	// Range over the endpoints for target url of the gateway instances.
 	targets := []string{}
@@ -83,14 +87,16 @@ func (p *prober) probe(ingress string, generation int64) (status.Result, error) 
 		}
 
 		if instanceIP == "" || instancePort == "" {
-			return res, fmt.Errorf("failed to get ip/port from endpoint: %v", subset)
+			res.Message = fmt.Sprintf("failed to get ip/port from endpoint: %v", subset)
+			return
 		}
 		targets = append(targets, fmt.Sprintf("%s:%s", instanceIP, instancePort))
 	}
 
 	if len(targets) == 0 {
-		return res, fmt.Errorf("no available endpoint for ingress gateway service: %s/%s",
+		res.Message = fmt.Sprintf("no available endpoint for ingress gateway service: %s/%s",
 			ingressGatewayNamespace, ingressGatewayService)
+		return
 	}
 
 	// Host header is in format of <ingress-name>-<generation>.<system-namespace>
@@ -100,19 +106,15 @@ func (p *prober) probe(ingress string, generation int64) (status.Result, error) 
 		req, err := http.NewRequest(http.MethodGet, targetUrl, nil)
 		if err != nil {
 			// This should never happen
-			return res, err
+			res.Message = fmt.Sprintf("failed to construct probe request: %v", err)
+			return
 		}
 		req.Header["Host"] = []string{hostHeader}
 
 		resp, err := p.httpClient.Do(req)
 		if err != nil || resp.StatusCode != http.StatusOK {
-			res = status.Result{
-				Ready:   false,
-				Reason:  "probe request failed",
-				Message: fmt.Sprintf("probe request error: %v, response: %v", err, resp),
-			}
-
-			return res, nil
+			res.Message = fmt.Sprintf("probe request error: %v, response: %v", err, resp)
+			return
 		}
 	}
 
@@ -120,5 +122,5 @@ func (p *prober) probe(ingress string, generation int64) (status.Result, error) 
 		Ready: true,
 	}
 
-	return res, nil
+	return
 }
