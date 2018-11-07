@@ -180,7 +180,6 @@ func (c *Reconciler) reconcile(ctx context.Context, ci *v1alpha1.ClusterIngress)
 	ci.Status.InitLoadBalancerReady([]v1alpha1.LoadBalancerIngressStatus{
 		{DomainInternal: names.K8sGatewayServiceFullname},
 	})
-	c.prober.Add(ci)
 
 	logger.Info("ClusterIngress successfully synced")
 	return nil
@@ -191,9 +190,12 @@ func (c *Reconciler) reconcileVirtualService(ctx context.Context, ci *v1alpha1.C
 	logger := logging.FromContext(ctx)
 	ns := desired.Namespace
 	name := desired.Name
+	virtualServiceChanged := false
 
 	vs, err := c.virtualServiceLister.VirtualServices(ns).Get(name)
 	if apierrs.IsNotFound(err) {
+		virtualServiceChanged = true
+
 		vs, err = c.SharedClientSet.NetworkingV1alpha3().VirtualServices(ns).Create(desired)
 		if err != nil {
 			logger.Error("Failed to create VirtualService", zap.Error(err))
@@ -206,6 +208,7 @@ func (c *Reconciler) reconcileVirtualService(ctx context.Context, ci *v1alpha1.C
 	} else if err != nil {
 		return err
 	} else if !equality.Semantic.DeepEqual(vs.Spec, desired.Spec) {
+		virtualServiceChanged = true
 		// Don't modify the informers copy
 		existing := vs.DeepCopy()
 		existing.Spec = desired.Spec
@@ -216,6 +219,11 @@ func (c *Reconciler) reconcileVirtualService(ctx context.Context, ci *v1alpha1.C
 		}
 		c.Recorder.Eventf(desired, corev1.EventTypeNormal, "Updated",
 			"Updated status for VirtualService %q/%q", ns, name)
+	}
+
+	if virtualServiceChanged {
+		// Trigger probe when VirtualService is changed.
+		c.prober.Add(ci)
 	}
 
 	return nil

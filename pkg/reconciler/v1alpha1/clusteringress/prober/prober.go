@@ -109,9 +109,11 @@ func (p *prober) probe(ingress string, generation int64) (res status.Result) {
 			res.Message = fmt.Sprintf("failed to construct probe request: %v", err)
 			return
 		}
-		req.Header["Host"] = []string{hostHeader}
+		req.Header.Set("Host", hostHeader)
 
 		resp, err := p.httpClient.Do(req)
+		defer resp.Body.Close()
+
 		if err != nil || resp.StatusCode != http.StatusOK {
 			res.Message = fmt.Sprintf("probe request error: %v, response: %v", err, resp)
 			return
