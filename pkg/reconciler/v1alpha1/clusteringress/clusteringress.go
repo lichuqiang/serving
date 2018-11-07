@@ -79,6 +79,7 @@ func NewController(
 		opt.ServingClientSet.NetworkingV1alpha1().ClusterIngresses(),
 		clusterIngressInformer.Lister(),
 		endpointsInformer.Lister())
+	go c.prober.Start(opt.StopChannel)
 
 	c.Logger.Info("Setting up event handlers")
 	clusterIngressInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -128,11 +129,18 @@ func (c *Reconciler) Reconcile(ctx context.Context, key string) error {
 		// This is important because the copy we loaded from the informer's
 		// cache may be stale and we don't want to overwrite a prior update
 		// to status with this stale state.
-	} else if _, err := c.updateStatus(ctx, ci); err != nil {
-		logger.Warn("Failed to update clusterIngress status", zap.Error(err))
-		c.Recorder.Eventf(ci, corev1.EventTypeWarning, "UpdateFailed",
-			"Failed to update status for ClusterIngress %q: %v", ci.Name, err)
-		return err
+	} else {
+		updated, err := c.updateStatus(ctx, ci)
+		if err != nil {
+			logger.Warn("Failed to update clusterIngress status", zap.Error(err))
+			c.Recorder.Eventf(ci, corev1.EventTypeWarning, "UpdateFailed",
+				"Failed to update status for ClusterIngress %q: %v", ci.Name, err)
+			return err
+		}
+
+		// Enqueue the ingress instance after status update,
+		// to avoid generation mismatch.
+		c.prober.Add(updated)
 	}
 	return err
 }
@@ -175,11 +183,11 @@ func (c *Reconciler) reconcile(ctx context.Context, ci *v1alpha1.ClusterIngress)
 	}
 
 	ci.Status.MarkNetworkConfigured()
+	// Fill the Ingress field here, and leave LoadBalancer status
+	// to networking prober for update later.
 	ci.Status.InitLoadBalancerReady([]v1alpha1.LoadBalancerIngressStatus{
 		{DomainInternal: names.K8sGatewayServiceFullname},
 	})
-	// Leave LoadBalancer status to networking prober for update.
-	c.prober.Add(ci)
 
 	logger.Info("ClusterIngress successfully synced")
 	return nil
