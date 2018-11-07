@@ -22,9 +22,12 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/knative/serving/pkg/apis/networking/v1alpha1"
+	clientset "github.com/knative/serving/pkg/client/clientset/versioned/typed/networking/v1alpha1"
+	listers "github.com/knative/serving/pkg/client/listers/networking/v1alpha1"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/prober/status"
 )
 
@@ -66,10 +69,12 @@ type manager struct {
 }
 
 // NewManager returns with a Manager instance.
-func NewManager(statusManager status.Manager) Manager {
+func NewManager(client clientset.ClusterIngressInterface,
+	clusterIngressLister listers.ClusterIngressLister,
+	endpointsLister corev1listers.EndpointsLister) Manager {
 	return &manager{
-		statusManager: statusManager,
-		prober:        newProber(),
+		statusManager: status.NewManager(client, clusterIngressLister),
+		prober:        newProber(endpointsLister),
 		workQueue: workqueue.NewNamedRateLimitingQueue(
 			workqueue.DefaultControllerRateLimiter(),
 			"NeworkingProber",

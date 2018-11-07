@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/knative/pkg/apis/istio/v1alpha3"
@@ -37,7 +38,6 @@ import (
 	listers "github.com/knative/serving/pkg/client/listers/networking/v1alpha1"
 	"github.com/knative/serving/pkg/reconciler"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/prober"
-	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/prober/status"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/resources"
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/resources/names"
 )
@@ -65,6 +65,7 @@ func NewController(
 	opt reconciler.Options,
 	clusterIngressInformer informers.ClusterIngressInformer,
 	virtualServiceInformer istioinformers.VirtualServiceInformer,
+	endpointsInformer corev1informers.EndpointsInformer,
 ) *controller.Impl {
 
 	c := &Reconciler{
@@ -74,10 +75,10 @@ func NewController(
 	}
 	impl := controller.NewImpl(c, c.Logger, "ClusterIngresses", reconciler.MustNewStatsReporter("ClusterIngress", c.Logger))
 
-	statusManager := status.NewManager(
+	c.prober = prober.NewManager(
 		opt.ServingClientSet.NetworkingV1alpha1().ClusterIngresses(),
-		clusterIngressInformer.Lister())
-	c.prober = prober.NewManager(statusManager)
+		clusterIngressInformer.Lister(),
+		endpointsInformer.Lister())
 
 	c.Logger.Info("Setting up event handlers")
 	clusterIngressInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{

@@ -20,22 +20,30 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
+	corev1listers "k8s.io/client-go/listers/core/v1"
+
 	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/prober/status"
-	"github.com/knative/serving/pkg/reconciler/v1alpha1/clusteringress/resources/names"
 	"github.com/knative/serving/pkg/system"
 )
 
-var probeTimeout = 5 * time.Second
+const (
+	probeTimeout = 5 * time.Second
+	// TODO(lichuqiang): move these to public places.
+	ingressGatewayService   = "knative-ingressgateway"
+	ingressGatewayNamespace = "istio-system"
+)
 
 // Prober helps to check the health state of given ClusterIngress(generation).
 type prober struct {
-	httpClient http.Client
+	endpointsLister corev1listers.EndpointsLister
+	httpClient      http.Client
 }
 
 // newProber returns with a prober instance.
-func newProber() *prober {
+func newProber(endpointsLister corev1listers.EndpointsLister) *prober {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout: probeTimeout,
@@ -44,33 +52,73 @@ func newProber() *prober {
 	client := http.Client{Transport: transport}
 
 	return &prober{
-		httpClient: client,
+		endpointsLister: endpointsLister,
+		httpClient:      client,
 	}
 }
 
-func (p *prober) probe(ingress string, generation int64) status.Result {
-	probeUrl := names.K8sGatewayServiceFullname
+func (p *prober) probe(ingress string, generation int64) (status.Result, error) {
+	res := status.Result{}
+
+	// Fetch the enpoints of ingress gateway.
+	endpoints, err := p.endpointsLister.Endpoints(ingressGatewayNamespace).Get(ingressGatewayService)
+	if err != nil {
+		return res, err
+	}
+	// Range over the endpoints for target url of the gateway instances.
+	targets := []string{}
+	for _, subset := range endpoints.Subsets {
+		instanceIP, instancePort := "", ""
+		for _, address := range subset.Addresses {
+			if address.IP != "" {
+				instanceIP = address.IP
+				break
+			}
+		}
+		for _, port := range subset.Ports {
+			if port.Name == "http2" {
+				instancePort = strconv.Itoa(int(port.Port))
+				break
+			}
+		}
+
+		if instanceIP == "" || instancePort == "" {
+			return res, fmt.Errorf("failed to get ip/port from endpoint: %v", subset)
+		}
+		targets = append(targets, fmt.Sprintf("%s:%s", instanceIP, instancePort))
+	}
+
+	if len(targets) == 0 {
+		return res, fmt.Errorf("no available endpoint for ingress gateway service: %s/%s",
+			ingressGatewayNamespace, ingressGatewayService)
+	}
+
 	// Host header is in format of <ingress-name>-<generation>.<system-namespace>
 	hostHeader := fmt.Sprintf("%s-%v.%s", ingress, generation, system.Namespace)
 
-	req, err := http.NewRequest(http.MethodGet, probeUrl, nil)
-	if err != nil {
-		// This should never happen
-		return status.Result{}
-	}
-	req.Header["Host"] = []string{hostHeader}
+	for _, targetUrl := range targets {
+		req, err := http.NewRequest(http.MethodGet, targetUrl, nil)
+		if err != nil {
+			// This should never happen
+			return res, err
+		}
+		req.Header["Host"] = []string{hostHeader}
 
-	res := status.Result{
-		Ready: true,
-	}
-	resp, err := p.httpClient.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		res = status.Result{
-			Ready:   false,
-			Reason:  "probe request failed",
-			Message: fmt.Sprintf("probe request error: %v, response: %v", err, resp),
+		resp, err := p.httpClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			res = status.Result{
+				Ready:   false,
+				Reason:  "probe request failed",
+				Message: fmt.Sprintf("probe request error: %v, response: %v", err, resp),
+			}
+
+			return res, nil
 		}
 	}
 
-	return res
+	res = status.Result{
+		Ready: true,
+	}
+
+	return res, nil
 }

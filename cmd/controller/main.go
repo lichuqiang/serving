@@ -184,6 +184,7 @@ func main() {
 			opt,
 			clusterIngressInformer,
 			virtualServiceInformer,
+			endpointsInformer,
 		),
 	}
 
